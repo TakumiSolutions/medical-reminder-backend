@@ -1,0 +1,52 @@
+{
+  "name": "medical-reminder-backend",
+  "version": "1.0.0",
+  "description": "API for the pharmacy reminder, WhatsApp marketing and order management platform",
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=.env src/server.js",
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "db:migrate": "node --env-file-if-exists=.env src/db/cli.js migrate",
+    "db:rollback": "node --env-file-if-exists=.env src/db/cli.js rollback",
+    "create-superadmin": "node --env-file-if-exists=.env src/scripts/createSuperadmin.js",
+    "lint": "eslint .",
+    "test": "node --import ./tests/setupEnv.js --test \"tests/**/*.test.js\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TakumiSolutions/medical-reminder-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/TakumiSolutions/medical-reminder-backend/issues"
+  },
+  "homepage": "https://github.com/TakumiSolutions/medical-reminder-backend#readme",
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "csv-parse": "^7.0.3",
+    "exceljs": "^4.4.0",
+    "express": "^5.3.0",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "knex": "^3.3.0",
+    "multer": "^2.4.0",
+    "mysql2": "^3.24.6",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0",
+    "supertest": "^7.3.1"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}
