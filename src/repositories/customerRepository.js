@@ -1,4 +1,5 @@
 import { db } from '../db/knex.js';
+import { toIsoDate } from '../utils/dates.js';
 
 const COLUMNS = [
   'customers.id',
@@ -19,7 +20,7 @@ const FIELD_COLUMNS = {
   notes: 'notes',
 };
 
-function toCustomer(row, branchesById) {
+function toCustomer(row, branchesById, medicinesById = new Map()) {
   return {
     id: String(row.id),
     mobile: row.mobile,
@@ -30,7 +31,24 @@ function toCustomer(row, branchesById) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     branches: branchesById.get(String(row.id)) ?? [],
+    medicines: medicinesById.get(String(row.id)) ?? [],
   };
+}
+
+/** Medicines per customer: [{ medicine, branchId, lastBillDate }], sorted by name. */
+async function loadMedicines(customerIds, conn = db) {
+  const map = new Map();
+  if (customerIds.length === 0) return map;
+  const rows = await conn('customer_medicines')
+    .whereIn('customer_id', customerIds)
+    .select('customer_id', 'branch_id', 'medicine', 'last_bill_date')
+    .orderBy('medicine');
+  for (const row of rows) {
+    const key = String(row.customer_id);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ medicine: row.medicine, branchId: row.branch_id, lastBillDate: toIsoDate(row.last_bill_date) });
+  }
+  return map;
 }
 
 async function loadBranches(customerIds, conn = db) {
@@ -62,29 +80,41 @@ function whereInBranches(query, branchIds) {
  * @param scopeBranchIds  branches the caller may see (null = all)
  * @param branchId        optional extra filter to one branch
  */
-export async function list({ search, scopeBranchIds, branchId, limit, offset }) {
+export async function list({ search, scopeBranchIds, branchId, medicine, limit, offset }) {
   const query = db('customers');
   if (scopeBranchIds) whereInBranches(query, scopeBranchIds);
   if (branchId) whereInBranches(query, [branchId]);
+  if (medicine) {
+    // Only medicines recorded at branches the caller can see (and the chosen branch, if any).
+    query.whereExists(function hasMedicine() {
+      this.from('customer_medicines')
+        .whereColumn('customer_medicines.customer_id', 'customers.id')
+        .where('customer_medicines.medicine', medicine);
+      if (scopeBranchIds) this.whereIn('customer_medicines.branch_id', scopeBranchIds);
+      if (branchId) this.where('customer_medicines.branch_id', branchId);
+    });
+  }
   if (search) {
     const escaped = search.replace(/[\\%_]/g, '\\$&');
     const digits = search.replace(/\D/g, '');
     query.where((q) => {
-      q.whereLike('customers.full_name', `%${escaped}%`);
-      if (digits.length >= 3) q.orWhereLike('customers.mobile', `%${digits}%`);
+      q.where('customers.full_name', 'like', `%${escaped}%`);
+      if (digits.length >= 3) q.orWhere('customers.mobile', 'like', `%${digits}%`);
     });
   }
 
   const [{ total }] = await query.clone().count({ total: '*' });
   const rows = await query.select(COLUMNS).orderBy('customers.full_name').orderBy('customers.id').limit(limit).offset(offset);
-  const branches = await loadBranches(rows.map((r) => r.id));
-  return { items: rows.map((r) => toCustomer(r, branches)), total: Number(total) };
+  const ids = rows.map((r) => r.id);
+  const [branches, medicines] = await Promise.all([loadBranches(ids), loadMedicines(ids)]);
+  return { items: rows.map((r) => toCustomer(r, branches, medicines)), total: Number(total) };
 }
 
 export async function findById(id, conn = db) {
   const row = await conn('customers').where('customers.id', id).first(COLUMNS);
   if (!row) return null;
-  return toCustomer(row, await loadBranches([row.id], conn));
+  const [branches, medicines] = await Promise.all([loadBranches([row.id], conn), loadMedicines([row.id], conn)]);
+  return toCustomer(row, branches, medicines);
 }
 
 export async function findIdByMobile(mobile, conn = db) {
@@ -97,27 +127,20 @@ export async function lockById(conn, id) {
 }
 
 /**
- * Existing customers by mobile, with their branch ids. Pass `forUpdate` inside a
- * transaction to lock them.
- * @returns {Map<string, { id, fullName, address, usualDoctor, branchIds: number[] }>}
+ * Existing customers by mobile, with the branches they belong to.
+ * @returns {Map<string, { id: string, branchIds: number[] }>}
  */
-export async function findByMobiles(mobiles, { conn = db, forUpdate = false } = {}) {
+export async function findByMobiles(mobiles) {
   const result = new Map();
   for (let i = 0; i < mobiles.length; i += 1000) {
-    const chunk = mobiles.slice(i, i + 1000);
-    const query = conn('customers').whereIn('mobile', chunk);
-    if (forUpdate) query.forUpdate();
-    const rows = await query.select('id', 'mobile', 'full_name', 'address', 'usual_doctor');
+    const rows = await db('customers').whereIn('mobile', mobiles.slice(i, i + 1000)).select('id', 'mobile');
     if (rows.length === 0) continue;
-    const links = await conn('customer_branches')
+    const links = await db('customer_branches')
       .whereIn('customer_id', rows.map((r) => r.id))
       .select('customer_id', 'branch_id');
     for (const row of rows) {
       result.set(row.mobile, {
         id: String(row.id),
-        fullName: row.full_name,
-        address: row.address,
-        usualDoctor: row.usual_doctor,
         branchIds: links.filter((l) => String(l.customer_id) === String(row.id)).map((l) => l.branch_id),
       });
     }
@@ -138,30 +161,6 @@ export async function insert(conn, fields, userId) {
   return String(id);
 }
 
-/** Inserts many customers and returns a map of mobile -> new id. */
-export async function insertMany(conn, rows, userId) {
-  for (let i = 0; i < rows.length; i += 500) {
-    await conn('customers').insert(
-      rows.slice(i, i + 500).map((r) => ({
-        mobile: r.mobile,
-        full_name: r.fullName,
-        address: r.address ?? null,
-        usual_doctor: r.usualDoctor ?? null,
-        created_by: userId,
-        updated_by: userId,
-      })),
-    );
-  }
-  // Re-read ids by mobile rather than assuming consecutive auto-increment values.
-  const ids = new Map();
-  const mobiles = rows.map((r) => r.mobile);
-  for (let i = 0; i < mobiles.length; i += 1000) {
-    const found = await conn('customers').whereIn('mobile', mobiles.slice(i, i + 1000)).select('id', 'mobile');
-    for (const row of found) ids.set(row.mobile, String(row.id));
-  }
-  return ids;
-}
-
 /** Updates the given fields (camelCase keys); undefined values are skipped. */
 export async function update(conn, id, fields, userId) {
   const values = { updated_by: userId, updated_at: conn.fn.now() };
@@ -172,10 +171,10 @@ export async function update(conn, id, fields, userId) {
 }
 
 /** Links customers to branches, ignoring links that already exist. */
-export async function addBranchLinks(conn, links, source) {
+export async function addBranchLinks(conn, links) {
   for (let i = 0; i < links.length; i += 1000) {
     await conn('customer_branches')
-      .insert(links.slice(i, i + 1000).map((l) => ({ customer_id: l.customerId, branch_id: l.branchId, source })))
+      .insert(links.slice(i, i + 1000).map((l) => ({ customer_id: l.customerId, branch_id: l.branchId, source: 'manual' })))
       .onConflict(['customer_id', 'branch_id'])
       .ignore();
   }
@@ -184,4 +183,35 @@ export async function addBranchLinks(conn, links, source) {
 export async function removeBranchLinks(conn, customerId, branchIds) {
   if (branchIds.length === 0) return;
   await conn('customer_branches').where({ customer_id: customerId }).whereIn('branch_id', branchIds).delete();
+}
+
+/** Distinct medicine names recorded at the given branches (null = all). */
+export async function listMedicineNames(scopeBranchIds) {
+  const query = db('customer_medicines').distinct('medicine').orderBy('medicine');
+  if (scopeBranchIds) query.whereIn('branch_id', scopeBranchIds);
+  return query.pluck('medicine');
+}
+
+/** Adds medicines for a customer at a branch, ignoring ones already recorded. Returns names added. */
+export async function addMedicines(conn, { customerId, branchId, medicines, lastBillDate = null, source, userId }) {
+  const existing = new Set(
+    await conn('customer_medicines').where({ customer_id: customerId, branch_id: branchId }).pluck('medicine'),
+  );
+  const added = medicines.filter((m) => !existing.has(m));
+  if (added.length) {
+    await conn('customer_medicines')
+      .insert(
+        added.map((medicine) => ({
+          customer_id: customerId,
+          branch_id: branchId,
+          medicine,
+          last_bill_date: lastBillDate,
+          source,
+          created_by: userId,
+        })),
+      )
+      .onConflict(['customer_id', 'branch_id', 'medicine'])
+      .ignore();
+  }
+  return added;
 }

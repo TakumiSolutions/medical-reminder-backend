@@ -28,8 +28,3 @@ export function normalizeIndianMobile(input) {
   return { ok: true, value: `+91${digits}` };
 }
 
-/** "+919876543210" -> "98765 43210" for display. */
-export function formatIndianMobile(e164) {
-  const local = e164.replace(/^\+91/, '');
-  return `${local.slice(0, 5)} ${local.slice(5)}`;
-}

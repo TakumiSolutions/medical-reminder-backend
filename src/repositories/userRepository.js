@@ -91,7 +91,7 @@ export async function list({ search, limit, offset, branchIds }) {
   }
   if (search) {
     const pattern = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
-    query.where((q) => q.whereLike('username', pattern).orWhereLike('full_name', pattern));
+    query.where((q) => q.where('username', 'like', pattern).orWhere('full_name', 'like', pattern));
   }
   const [{ total }] = await query.clone().count({ total: '*' });
   const rows = await query.select(PUBLIC_COLUMNS).orderBy('users.full_name').limit(limit).offset(offset);

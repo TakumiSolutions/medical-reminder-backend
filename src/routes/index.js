@@ -5,8 +5,11 @@ import { authenticate, requirePermission } from '../middleware/auth.js';
 import * as accessRepository from '../repositories/accessRepository.js';
 import { auditLogRoutes } from './auditLogRoutes.js';
 import { authRoutes } from './authRoutes.js';
-import { contactImportRoutes } from './contactImportRoutes.js';
 import { customerRoutes } from './customerRoutes.js';
+import { dashboardRoutes } from './dashboardRoutes.js';
+import { deliveryRoutes } from './deliveryRoutes.js';
+import { prontozRoutes } from './prontozRoutes.js';
+import { reminderRoutes } from './reminderRoutes.js';
 import { userRoutes } from './userRoutes.js';
 
 export const apiRoutes = Router();
@@ -24,7 +27,10 @@ apiRoutes.use('/auth', authRoutes);
 apiRoutes.use('/users', userRoutes);
 apiRoutes.use('/audit-logs', auditLogRoutes);
 apiRoutes.use('/customers', customerRoutes);
-apiRoutes.use('/contact-imports', contactImportRoutes);
+apiRoutes.use('/prontoz', prontozRoutes);
+apiRoutes.use('/reminders', reminderRoutes);
+apiRoutes.use('/deliveries', deliveryRoutes);
+apiRoutes.use('/dashboard', dashboardRoutes);
 
 // Only the branches the caller has access to.
 apiRoutes.get('/branches', authenticate, requirePermission(PERMISSIONS.BRANCHES_READ), async (req, res) => {

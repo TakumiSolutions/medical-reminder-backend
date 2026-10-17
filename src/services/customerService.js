@@ -3,6 +3,8 @@ import { db } from '../db/knex.js';
 import * as accessRepository from '../repositories/accessRepository.js';
 import * as auditRepository from '../repositories/auditRepository.js';
 import * as customerRepository from '../repositories/customerRepository.js';
+import { env } from '../config/env.js';
+import { todayIn } from '../utils/dates.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 
 const MOBILE_TAKEN = 'Another customer already has this mobile number.';
@@ -13,6 +15,13 @@ function isVisibleTo(auth, customer) {
   if (auth.branchIds === null) return true;
   const own = new Set(auth.branchIds);
   return customer.branches.some((b) => own.has(b.id));
+}
+
+/** Hides medicines recorded at branches the caller cannot see. */
+function forViewer(auth, customer) {
+  if (auth.branchIds === null) return customer;
+  const own = new Set(auth.branchIds);
+  return { ...customer, medicines: customer.medicines.filter((m) => own.has(m.branchId)) };
 }
 
 /** Audit entries tied to a single branch are only shown to users of that branch. */
@@ -26,78 +35,143 @@ async function assertAssignableBranches(auth, branchIds, conn) {
   if (!hasBranches(auth, branchIds)) throw forbidden('You can only use branches you have access to.');
 }
 
-export async function listCustomers(auth, { search, branchId, page, pageSize }) {
+export async function listCustomers(auth, { search, branchId, medicine, page, pageSize }) {
   if (branchId && !hasBranches(auth, [branchId])) throw forbidden('You do not have access to that branch.');
   const { items, total } = await customerRepository.list({
     search,
     branchId,
+    medicine,
     scopeBranchIds: auth.branchIds,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   });
-  return { items, page, pageSize, total };
+  return { items: items.map((c) => forViewer(auth, c)), page, pageSize, total };
 }
 
 export async function getCustomer(auth, id) {
   const customer = await customerRepository.findById(id);
   if (!customer || !isVisibleTo(auth, customer)) throw notFound('Customer not found.');
-  return customer;
+  return forViewer(auth, customer);
 }
 
+/** Medicine names for the filter, limited to the caller's branches. */
+export const listMedicineNames = (auth) => customerRepository.listMedicineNames(auth.branchIds);
+
 /**
- * Creates a customer. If the mobile number already belongs to a customer, that customer
- * is linked to the requested branches instead (one record per person across branches);
- * their stored details are left as they are.
+ * Creates a customer, or — if the mobile number already belongs to one — links that
+ * customer to `branchIds` instead (one record per person across branches). An existing
+ * customer's stored details are left as they are. Runs inside the caller's transaction.
+ * @returns {{ id: string, existed: boolean }}
+ */
+async function createOrLinkCustomer(trx, auth, fields, branchIds) {
+  await assertAssignableBranches(auth, branchIds, trx);
+  const links = (customerId) => branchIds.map((branchId) => ({ customerId, branchId }));
+
+  const existingId = await customerRepository.findIdByMobile(fields.mobile, trx);
+  if (existingId) {
+    await customerRepository.lockById(trx, existingId);
+    const existing = await customerRepository.findById(existingId, trx);
+    const current = existing.branches.map((b) => b.id);
+    const added = branchIds.filter((bid) => !current.includes(bid));
+    if (added.length) {
+      await customerRepository.addBranchLinks(trx, links(existingId));
+      await auditRepository.record(
+        {
+          actorUserId: auth.user.id,
+          action: 'customer.branch_linked',
+          entityType: 'customer',
+          entityId: existingId,
+          branchId: auditBranch(added),
+          details: { branchIds: { from: current, to: [...current, ...added] } },
+        },
+        trx,
+      );
+    }
+    return { id: existingId, existed: true };
+  }
+
+  const newId = await customerRepository.insert(trx, fields, auth.user.id);
+  await customerRepository.addBranchLinks(trx, links(newId));
+  await auditRepository.record(
+    {
+      actorUserId: auth.user.id,
+      action: 'customer.created',
+      entityType: 'customer',
+      entityId: newId,
+      branchId: auditBranch(branchIds),
+      details: { ...fields, branchIds },
+    },
+    trx,
+  );
+  return { id: newId, existed: false };
+}
+
+const RACE_MESSAGE = 'This customer was just added by someone else. Search for them and try again.';
+
+/**
+ * Creates a customer, or links the existing customer with the same mobile number.
  * @returns {{ customer, existed: boolean }}
  */
 export async function createCustomer(auth, input) {
   const { branchIds, ...fields } = input;
   try {
-    const { id, existed } = await db.transaction(async (trx) => {
-      await assertAssignableBranches(auth, branchIds, trx);
-      const links = (customerId) => branchIds.map((branchId) => ({ customerId, branchId }));
+    const { id, existed } = await db.transaction((trx) => createOrLinkCustomer(trx, auth, fields, branchIds));
+    return { customer: forViewer(auth, await customerRepository.findById(id)), existed };
+  } catch (error) {
+    // Another request created the same mobile number at the same moment.
+    if (error.code === 'ER_DUP_ENTRY') throw conflict(RACE_MESSAGE);
+    throw error;
+  }
+}
 
+/**
+ * Adds a customer from a branch's ProntoZ export, together with the chosen medicines for
+ * that branch. A customer of another branch (same mobile) is linked to this branch and
+ * gets the medicines; their details are not overwritten. Someone who is already a
+ * customer at this branch is rejected — medicines are not added to existing customers.
+ * @returns {{ customer, existed: boolean, medicinesAdded: string[] }}
+ */
+export async function addFromProntoz(auth, { branchId, medicines, lastBillDate, ...fields }) {
+  if (lastBillDate > todayIn(env.APP_TIMEZONE)) {
+    throw badRequest('The last bill date cannot be in the future.', [{ path: 'lastBillDate', message: 'Cannot be in the future.' }]);
+  }
+  try {
+    const result = await db.transaction(async (trx) => {
       const existingId = await customerRepository.findIdByMobile(fields.mobile, trx);
       if (existingId) {
         await customerRepository.lockById(trx, existingId);
         const existing = await customerRepository.findById(existingId, trx);
-        const added = branchIds.filter((bid) => !existing.branches.some((b) => b.id === bid));
-        if (added.length) {
-          await customerRepository.addBranchLinks(trx, links(existingId), 'manual');
-          await auditRepository.record(
-            {
-              actorUserId: auth.user.id,
-              action: 'customer.branch_linked',
-              entityType: 'customer',
-              entityId: existingId,
-              branchId: auditBranch(added),
-              details: { branchIds: { from: existing.branches.map((b) => b.id), to: [...existing.branches.map((b) => b.id), ...added] } },
-            },
-            trx,
-          );
+        if (existing.branches.some((b) => b.id === branchId)) {
+          throw conflict(`${existing.fullName} is already a customer at this branch.`);
         }
-        return { id: existingId, existed: true };
       }
-
-      const newId = await customerRepository.insert(trx, fields, auth.user.id);
-      await customerRepository.addBranchLinks(trx, links(newId), 'manual');
-      await auditRepository.record(
-        {
-          actorUserId: auth.user.id,
-          action: 'customer.created',
-          entityType: 'customer',
-          entityId: newId,
-          branchId: auditBranch(branchIds),
-          details: { ...fields, branchIds },
-        },
-        trx,
-      );
-      return { id: newId, existed: false };
+      const { id, existed } = await createOrLinkCustomer(trx, auth, fields, [branchId]);
+      const added = await customerRepository.addMedicines(trx, {
+        customerId: id,
+        branchId,
+        medicines,
+        lastBillDate,
+        source: 'prontoz',
+        userId: auth.user.id,
+      });
+      if (added.length) {
+        await auditRepository.record(
+          {
+            actorUserId: auth.user.id,
+            action: 'customer.medicines_added',
+            entityType: 'customer',
+            entityId: id,
+            branchId,
+            details: { medicines: added, lastBillDate, source: 'prontoz' },
+          },
+          trx,
+        );
+      }
+      return { id, existed, medicinesAdded: added };
     });
-    return { customer: await customerRepository.findById(id), existed };
+    return { ...result, customer: forViewer(auth, await customerRepository.findById(result.id)) };
   } catch (error) {
-    // Another request created the same mobile number at the same moment.
-    if (error.code === 'ER_DUP_ENTRY') throw conflict('This customer was just added by someone else. Search for them and try again.');
+    if (error.code === 'ER_DUP_ENTRY') throw conflict(RACE_MESSAGE);
     throw error;
   }
 }
@@ -150,7 +224,7 @@ export async function updateCustomer(auth, id, patch) {
       );
       if (Object.keys(fieldChanges).length) await customerRepository.update(trx, id, fieldChanges, auth.user.id);
       if (added.length) {
-        await customerRepository.addBranchLinks(trx, added.map((branchId) => ({ customerId: id, branchId })), 'manual');
+        await customerRepository.addBranchLinks(trx, added.map((branchId) => ({ customerId: id, branchId })));
       }
       await customerRepository.removeBranchLinks(trx, id, removed);
 
@@ -170,5 +244,5 @@ export async function updateCustomer(auth, id, patch) {
     if (error.code === 'ER_DUP_ENTRY') throw conflict(MOBILE_TAKEN, [{ path: 'mobile', message: MOBILE_TAKEN }]);
     throw error;
   }
-  return customerRepository.findById(id);
+  return forViewer(auth, await customerRepository.findById(id));
 }

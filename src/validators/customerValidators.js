@@ -10,7 +10,7 @@ const optionalText = (max) =>
     .nullish()
     .transform((value) => (value === undefined ? undefined : value || null));
 
-export const customerFields = {
+const customerFields = {
   fullName: z.string().trim().min(1, 'Patient name is required.').max(150, 'Must be at most 150 characters.'),
   mobile: z.union([z.string(), z.number()]).transform((value, ctx) => {
     const result = normalizeIndianMobile(value);
@@ -38,6 +38,7 @@ export const customerIdParamsSchema = z.object({
 export const listCustomersQuerySchema = z.object({
   search: z.string().trim().max(100).optional(),
   branchId: z.coerce.number().int().positive().optional(),
+  medicine: z.string().trim().min(1).max(100).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 });
@@ -58,3 +59,21 @@ export const updateCustomerSchema = z
     branchIds: branchIdsArray.optional(),
   })
   .refine((value) => Object.values(value).some((v) => v !== undefined), { message: 'No changes supplied.' });
+
+export const medicineNameField = z.string().trim().min(1, 'Medicine name is required.').max(100);
+
+export const isoDateField = z.iso.date('Use the YYYY-MM-DD format.');
+
+export const addFromProntozSchema = z.object({
+  branchId: z.number().int().positive(),
+  // Date of the ProntoZ bill the medicines come from; reminders count from it.
+  lastBillDate: isoDateField,
+  fullName: customerFields.fullName,
+  mobile: customerFields.mobile,
+  address: customerFields.address,
+  usualDoctor: customerFields.usualDoctor,
+  medicines: z
+    .array(medicineNameField)
+    .max(50)
+    .transform((names) => [...new Set(names)]),
+});

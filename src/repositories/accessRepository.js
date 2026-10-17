@@ -48,7 +48,7 @@ export async function loadRoleDefinitions(conn = db) {
   );
 }
 
-export async function listModules(conn = db) {
+async function listModules(conn = db) {
   return conn('modules').select('code', 'name').orderBy('sort_order');
 }
 

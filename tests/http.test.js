@@ -19,7 +19,10 @@ describe('API guards', () => {
       '/api/branches',
       '/api/audit-logs',
       '/api/customers',
-      '/api/contact-imports',
+      '/api/prontoz/customers',
+      '/api/reminders',
+      '/api/deliveries',
+      '/api/dashboard',
     ]) {
       const res = await request(app).get(path);
       assert.equal(res.status, 401, path);

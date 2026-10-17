@@ -7,7 +7,7 @@ export const usernameField = z
   .toLowerCase()
   .min(3, 'Username must be at least 3 characters.')
   .max(50, 'Username must be at most 50 characters.')
-  .regex(/^[a-z0-9._-]+$/, 'Username may only contain letters, numbers, dots, hyphens and underscores.');
+  .regex(/^[a-z0-9._@-]+$/, 'Username may only contain letters, numbers, dots, hyphens, underscores and @.');
 
 // Interim policy pending business confirmation: length-based, no composition rules.
 export const newPasswordField = z

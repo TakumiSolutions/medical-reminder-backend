@@ -8,12 +8,16 @@ export const PERMISSIONS = Object.freeze({
   AUDIT_LOGS_READ: 'audit_logs.read',
   CUSTOMERS_READ: 'customers.read',
   CUSTOMERS_MANAGE: 'customers.manage',
-  CONTACT_IMPORTS_MANAGE: 'contact_imports.manage',
+  PRONTOZ_CUSTOMERS_READ: 'prontoz_customers.read',
+  REMINDERS_READ: 'reminders.read',
+  REMINDERS_MANAGE: 'reminders.manage',
+  DELIVERIES_READ: 'deliveries.read',
+  DELIVERIES_MANAGE: 'deliveries.manage',
 });
 
 export const ROLE_CODES = Object.freeze(['superadmin', 'admin', 'staff']);
 
-export const managePermissionFor = (roleCode) => `users.manage.${roleCode}`;
+const managePermissionFor = (roleCode) => `users.manage.${roleCode}`;
 
 /**
  * Builds a user's effective access.
@@ -67,9 +71,3 @@ export function hasBranches(access, branchIds) {
   return branchIds.every((id) => own.has(Number(id)));
 }
 
-/** True if `access` covers every module in `moduleCodes`. */
-export function hasModules(access, moduleCodes) {
-  if (access.modules === null) return true;
-  const own = new Set(access.modules);
-  return moduleCodes.every((code) => own.has(code));
-}

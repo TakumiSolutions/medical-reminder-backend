@@ -17,3 +17,7 @@ export async function create(req, res) {
 export async function update(req, res) {
   res.json({ customer: await customerService.updateCustomer(req.auth, req.params.id, req.body) });
 }
+
+export async function medicines(req, res) {
+  res.json({ medicines: await customerService.listMedicineNames(req.auth) });
+}

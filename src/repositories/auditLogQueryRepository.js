@@ -6,7 +6,7 @@ function toEntry(row) {
     action: row.action,
     entityType: row.entity_type,
     entityId: row.entity_id,
-    entityLabel: row.target_username ? `@${row.target_username}` : (row.target_customer ?? row.target_import ?? null),
+    entityLabel: row.target_username ? `@${row.target_username}` : (row.target_customer ?? null),
     details: typeof row.details === 'string' ? JSON.parse(row.details) : row.details,
     createdAt: row.created_at,
     actor: row.actor_id ? { id: String(row.actor_id), username: row.actor_username, fullName: row.actor_full_name } : null,
@@ -41,13 +41,6 @@ export async function list({ filters, branchIds, limit, offset }) {
         db.raw('?', ['customer']),
       );
     })
-    .leftJoin('contact_imports as target_import', function joinImport() {
-      this.on('target_import.id', '=', 'audit_logs.entity_id').andOn(
-        'audit_logs.entity_type',
-        '=',
-        db.raw('?', ['contact_import']),
-      );
-    })
     .leftJoin('branches', 'branches.id', 'audit_logs.branch_id')
     .select(
       'audit_logs.*',
@@ -56,7 +49,6 @@ export async function list({ filters, branchIds, limit, offset }) {
       'actor.full_name as actor_full_name',
       'target.username as target_username',
       'target_customer.full_name as target_customer',
-      'target_import.file_name as target_import',
       'branches.name as branch_name',
     )
     .orderBy('audit_logs.id', 'desc')

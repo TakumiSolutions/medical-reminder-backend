@@ -5,7 +5,7 @@ Node.js + Express REST API backed by MySQL for the Pharmacy Reminder, WhatsApp M
 ## Requirements
 
 - Node.js 22+
-- MySQL 8
+- MySQL 8 or MariaDB 10.4+ (e.g. XAMPP)
 
 ## Setup
 
@@ -20,14 +20,14 @@ npm run dev                     # http://localhost:4000
 Create the database first, for example:
 
 ```sql
-CREATE DATABASE pharmacy_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE DATABASE pharmacy_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
 ## Scripts
 
 | Script | Purpose |
 | --- | --- |
-| `npm run dev` | Start with file watching |
+| `npm run dev` | Start with nodemon: restarts on changes to `src/` or `.env` (type `rs` + Enter to restart manually) |
 | `npm start` | Start for production |
 | `npm run db:migrate` / `db:rollback` | Apply / revert the latest migration batch |
 | `npm run create-superadmin` | Bootstrap the first Superadmin (no default credentials exist) |
@@ -76,15 +76,46 @@ src/
 - Creating a customer whose mobile already exists links the existing customer to the selected branch instead; their details are not overwritten.
 - Customers are never deleted. Two records are never merged automatically; changing a mobile number to one already in use is rejected.
 
-## Contact import
+## ProntoZ data (read-only)
 
-1. **Upload** (`.xlsx` or `.csv`, max 5 MB / 10,000 rows): the branch is chosen at upload. The first row must be headers. Name and Mobile columns are required; Address and Doctor are optional; other columns are ignored and listed. Common header spellings are recognised (e.g. "Patient Name", "Mobile No.", "Dr. Name").
-2. **Preview**: every row is validated and classified as `new`, `update`, `unchanged`, `invalid` (e.g. no or bad mobile) or `duplicate` (same mobile earlier in the file). Nothing is written to customers yet.
-3. **Confirm**: in a single transaction each row is re-checked against current data and applied. New customers are created; existing ones (matched by mobile) get non-empty imported values for name/address/doctor and are linked to the branch. Blank cells never clear stored data, and notes are never imported. A confirmed or cancelled import cannot be applied again.
+Each branch has its own ProntoZ export database (tables `CustomerList` and `CustomerBills`). The **ProntoZ customers** page shows a branch's customers with the medicines on their **last bill**; users only see branches they belong to (Superadmin sees all).
 
-Every row's outcome, field changes and resulting customer are kept in `contact_import_rows`. Files are parsed in memory and not stored.
+- `PRONTOZ_DB_*` in `.env` must use a database user with **SELECT only** on those databases.
+- `PRONTOZ_DATABASES` maps branch codes to databases, e.g. `central:PharmacyExport,speedwell:PharmacyExportSpeedwell`.
+- Filter by a medicine to list customers whose last bill contained it.
+- **Add** (needs the Customers page with manage rights) copies the customer and the chosen medicines into Customers for that branch. A customer of another branch (same mobile) is linked to this branch with these medicines; their details are not overwritten. Someone already a customer at this branch shows "In customers" and cannot be added again — medicines are not added to existing customers.
 
-Importing a contact does not record marketing consent.
+Customer medicines are stored per branch (`customer_medicines`). The Customers page shows them and can be filtered by medicine; users only see medicines recorded at their own branches.
+
+## Reminders
+
+Set from the Customers page (**Set reminder**), per medicine:
+
+- Staff choose N days (quick picks 27 / 57 / 87, or any 1–365). Reminders fall on **day N, N+1 and N+2 after the medicine's last bill date**.
+- The last bill date is stored when a medicine is added from ProntoZ; if none is stored, the dialog asks for it (never a future date).
+- One cycle per scheduling; it does not repeat. A medicine can have only one open reminder at a time.
+- Dates already in the past when scheduling are recorded as *skipped* (never sent late). If all three have passed, scheduling is refused.
+- **Stop** cancels the remaining dates (with an optional reason).
+- When the customer responds, staff mark the reminder **Ordered** (nothing else is entered; the bill is made in ProntoZ and the store delivers) or **Refused** (reason required). Either cancels the remaining dates and moves the customer to the **Ordered** or **Refused** page.
+- Outcomes can be undone: switch Ordered ↔ Refused, or **Move back to reminders**, which restores the cancelled dates (dates already passed become *skipped*). Every change is in the audit log.
+- Stopped reminders cannot get an outcome, and reminders with an outcome cannot be stopped.
+- "Today" uses `APP_TIMEZONE` (default `Asia/Kolkata`).
+- **Messages are not sent yet**: reminders are scheduled and shown until a WhatsApp provider is connected.
+
+## Deliveries
+
+Marking a reminder **Ordered** asks how the customer gets the medicine:
+
+- **Home delivery**: address required, pre-filled from the customer. A tick box ("Also save as the customer's address") updates the customer too.
+- **Store pickup**: no address.
+
+Each order becomes a delivery on the **Deliveries** page:
+
+- Home delivery: **Pending → Out for delivery → Delivered**. Store pickup: **Ready for pickup → Picked up**.
+- Either can be marked **Failed** / **Not collected** (reason required), then **Try again** returns it to pending.
+- Deliveries are assigned to an active user of that branch; **My deliveries** shows a user's own.
+- Every status change is kept in `delivery_status_history` (shown under **History**) and in the audit log.
+- Undoing the order (Ordered → Refused, or back to reminders) cancels a pending or failed delivery. Once it is out for delivery or delivered, the order can no longer be undone.
 
 ## API
 
@@ -96,6 +127,7 @@ Importing a contact does not record marketing consent.
 | GET | `/api/auth/me` | signed in |
 | POST | `/api/auth/change-password` | signed in |
 | GET | `/api/branches` | `branches.read` |
+| GET | `/api/dashboard` | signed in (today's figures per accessible branch; sections follow the user's pages; total across branches when more than one) |
 | GET | `/api/users` | `users.read` |
 | GET | `/api/users/:id` | `users.read` |
 | GET | `/api/users/form-options` | any `users.manage.*` (roles, branches and pages the caller may assign) |
@@ -105,19 +137,28 @@ Importing a contact does not record marketing consent.
 | GET | `/api/audit-logs` | `audit_logs.read` (filters: `action`, `entityType`, `entityId`, `actorUserId`, `from`, `to`) |
 | GET | `/api/audit-logs/actions` | `audit_logs.read` |
 
-| GET | `/api/customers` | `customers.read` (`search`, `branchId`, `page`, `pageSize`) |
+| GET | `/api/customers` | `customers.read` (`search`, `branchId`, `medicine`, `page`, `pageSize`) |
 | GET | `/api/customers/:id` | `customers.read` |
 | POST | `/api/customers` | `customers.manage` (200 + `existed: true` when the mobile matched) |
 | PATCH | `/api/customers/:id` | `customers.manage` |
-| GET | `/api/contact-imports` | `contact_imports.manage` |
-| POST | `/api/contact-imports` | `contact_imports.manage` (multipart: `file`, `branchId`) |
-| GET | `/api/contact-imports/template.csv` | `contact_imports.manage` |
-| GET | `/api/contact-imports/:id` | `contact_imports.manage` |
-| GET | `/api/contact-imports/:id/rows` | `contact_imports.manage` (`status=invalid,duplicate`, paging) |
-| POST | `/api/contact-imports/:id/commit` | `contact_imports.manage` |
-| POST | `/api/contact-imports/:id/cancel` | `contact_imports.manage` |
+| GET | `/api/prontoz/sources` | `prontoz_customers.read` (branches with ProntoZ data the caller can see) |
+| GET | `/api/prontoz/customers` | `prontoz_customers.read` (`branchId`, `search`, `medicine`, `mobileStatus=all\|valid\|invalid\|missing`, paging) |
+| GET | `/api/prontoz/medicines` | `prontoz_customers.read` (`branchId`) |
+| POST | `/api/prontoz/customers/add` | `prontoz_customers.read` + `customers.manage` |
+| GET | `/api/customers/medicines` | `customers.read` |
+| GET | `/api/reminders` | `reminders.read` (`view=active\|due\|finished\|cancelled\|ordered\|refused`, `search`, paging) |
+| GET | `/api/reminders/options` | `reminders.manage` + `customers.read` (`customerId`) |
+| POST | `/api/reminders` | `reminders.manage` + `customers.read` |
+| POST | `/api/reminders/:id/cancel` | `reminders.manage` |
+| POST | `/api/reminders/:id/outcome` | `reminders.manage` (`{ outcome: 'ordered', delivery: { method: 'delivery', address, saveAddress } \| { method: 'pickup' } }` or `{ outcome: 'refused', reason }`) |
+| POST | `/api/reminders/:id/reopen` | `reminders.manage` |
+| GET | `/api/deliveries` | `deliveries.read` (`status`, `mine=true`, `search`, paging) |
+| GET | `/api/deliveries/:id` | `deliveries.read` (includes status history) |
+| GET | `/api/deliveries/:id/assignees` | `deliveries.manage` |
+| POST | `/api/deliveries/:id/assign` | `deliveries.manage` (`{ userId \| null }`) |
+| POST | `/api/deliveries/:id/status` | `deliveries.manage` (`{ status }`, or `{ status: 'failed', note }`) |
 
-User, customer, import and branch lists are limited to the caller's branches.
+User, customer, reminder, delivery and branch lists are limited to the caller's branches.
 
 Errors use one shape: `{ "error": { "code", "message", "details?" } }`.
 
