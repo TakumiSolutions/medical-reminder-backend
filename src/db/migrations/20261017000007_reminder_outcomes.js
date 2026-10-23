@@ -2,11 +2,21 @@
 // reminder dates; undoing the outcome restores them.
 
 export async function up(knex) {
+  // One column per ALTER: TiDB cannot place a column AFTER one added in the same statement.
   await knex.schema.alterTable('reminder_cycles', (t) => {
     t.enum('outcome', ['ordered', 'refused']).nullable().after('status');
+  });
+  await knex.schema.alterTable('reminder_cycles', (t) => {
     t.string('outcome_reason', 500).nullable().after('outcome');
-    t.bigInteger('outcome_by').unsigned().nullable().references('users.id').onDelete('SET NULL').after('outcome_reason');
+  });
+  await knex.schema.alterTable('reminder_cycles', (t) => {
+    t.bigInteger('outcome_by').unsigned().nullable().after('outcome_reason');
+  });
+  await knex.schema.alterTable('reminder_cycles', (t) => {
     t.dateTime('outcome_at').nullable().after('outcome_by');
+  });
+  await knex.schema.alterTable('reminder_cycles', (t) => {
+    t.foreign('outcome_by').references('users.id').onDelete('SET NULL');
     t.index(['outcome', 'outcome_at']);
   });
 
