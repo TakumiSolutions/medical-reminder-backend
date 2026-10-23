@@ -12,6 +12,7 @@ export const knexConfig = {
     user: env.DB_USER,
     password: env.DB_PASSWORD,
     database: env.DB_NAME,
+    ssl: env.DB_SSL ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
     // All DATETIME values are stored and read as UTC.
     timezone: 'Z',
     dateStrings: false,

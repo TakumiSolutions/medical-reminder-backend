@@ -10,7 +10,9 @@
     "create-superadmin": "node --env-file-if-exists=.env src/scripts/createSuperadmin.js",
     "create-agent": "node --env-file-if-exists=.env src/scripts/createAgent.js",
     "lint": "eslint .",
-    "test": "node --import ./tests/setupEnv.js --test \"tests/**/*.test.js\""
+    "test": "node --import ./tests/setupEnv.js --test \"tests/**/*.test.js\"",
+    "db:create": "node --env-file-if-exists=.env src/db/cli.js create",
+    "db:setup": "node --env-file-if-exists=.env src/db/cli.js setup"
   },
   "repository": {
     "type": "git",

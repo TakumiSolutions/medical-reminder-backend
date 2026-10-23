@@ -31,6 +31,7 @@ CREATE DATABASE pharmacy_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_
 | `npm run dev` | Start with nodemon: restarts on changes to `src/` or `.env` (type `rs` + Enter to restart manually) |
 | `npm start` | Start for production |
 | `npm run db:migrate` / `db:rollback` | Apply / revert the latest migration batch |
+| `npm run db:setup` | Create `DB_NAME` if missing, then migrate (safe on every deploy; used as Render's start step) |
 | `npm run create-superadmin` | Bootstrap the first Superadmin (no default credentials exist) |
 | `npm run create-agent -- --branch <code> --name "<name>"` | Create a desktop agent (RxBridge) for a branch and print its token once |
 | `npm test` | Unit and HTTP tests (no database needed) |

@@ -13,6 +13,8 @@ const envSchema = z.object({
   DB_USER: z.string().min(1),
   DB_PASSWORD: z.string().default(''),
   DB_NAME: z.string().min(1),
+  // TLS to MySQL with certificate verification. Required by hosted MySQL such as TiDB Cloud.
+  DB_SSL: booleanString.default(false),
 
   // Comma-separated list of frontend origins allowed to call the API with credentials.
   CORS_ORIGINS: z
