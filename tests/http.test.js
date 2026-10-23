@@ -23,6 +23,9 @@ describe('API guards', () => {
       '/api/reminders',
       '/api/deliveries',
       '/api/dashboard',
+      '/api/agents',
+      '/api/agents/1/bills',
+      '/api/agents/bills/1',
     ]) {
       const res = await request(app).get(path);
       assert.equal(res.status, 401, path);

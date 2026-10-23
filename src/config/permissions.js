@@ -13,6 +13,7 @@ export const PERMISSIONS = Object.freeze({
   REMINDERS_MANAGE: 'reminders.manage',
   DELIVERIES_READ: 'deliveries.read',
   DELIVERIES_MANAGE: 'deliveries.manage',
+  AGENTS_MANAGE: 'agents.manage',
 });
 
 export const ROLE_CODES = Object.freeze(['superadmin', 'admin', 'staff']);
