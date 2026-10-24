@@ -16,6 +16,7 @@ const connections = new Map(
             user: env.PRONTOZ_DB_USER,
             password: env.PRONTOZ_DB_PASSWORD,
             database,
+            ssl: env.PRONTOZ_DB_SSL ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
             // DATE columns come back as 'YYYY-MM-DD' strings, avoiding timezone shifts.
             dateStrings: true,
             decimalNumbers: true,

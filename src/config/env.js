@@ -49,6 +49,7 @@ const envSchema = z.object({
   PRONTOZ_DB_PORT: z.coerce.number().int().positive().default(3306),
   PRONTOZ_DB_USER: z.string().min(1).optional(),
   PRONTOZ_DB_PASSWORD: z.string().default(''),
+  PRONTOZ_DB_SSL: booleanString.default(false),
   // Branch code -> database name, e.g. "central:PharmacyExport,speedwell:PharmacyExportSpeedwell".
   PRONTOZ_DATABASES: z
     .string()
