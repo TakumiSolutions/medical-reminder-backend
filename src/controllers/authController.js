@@ -4,7 +4,10 @@ import * as authService from '../services/authService.js';
 const cookieOptions = {
   httpOnly: true,
   secure: env.SESSION_COOKIE_SECURE,
-  sameSite: 'lax',
+  sameSite: env.SESSION_COOKIE_SAMESITE,
+  // Cross-site cookies are kept per frontend site (CHIPS), which browsers blocking
+  // third-party cookies still allow.
+  partitioned: env.SESSION_COOKIE_SAMESITE === 'none',
   path: '/',
 };
 

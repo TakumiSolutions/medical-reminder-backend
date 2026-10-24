@@ -26,6 +26,9 @@ const envSchema = z.object({
   SESSION_TTL_HOURS: z.coerce.number().positive().default(12),
   // Must be true in production (HTTPS). Only disable for local HTTP development.
   SESSION_COOKIE_SECURE: booleanString.default(true),
+  // "lax" when the frontend is served from the API's site (or proxies /api). "none" when the
+  // frontend calls the API on another domain; the cookie is then partitioned to the frontend's site.
+  SESSION_COOKIE_SAMESITE: z.enum(['lax', 'none']).default('lax'),
 
   // Timezone that decides "today" for reminder dates (the pharmacies are in India).
   APP_TIMEZONE: z
@@ -74,6 +77,9 @@ function loadEnv() {
   }
   if (result.data.NODE_ENV === 'production' && !result.data.SESSION_COOKIE_SECURE) {
     throw new Error('SESSION_COOKIE_SECURE must be true in production.');
+  }
+  if (result.data.SESSION_COOKIE_SAMESITE === 'none' && !result.data.SESSION_COOKIE_SECURE) {
+    throw new Error('SESSION_COOKIE_SAMESITE=none requires SESSION_COOKIE_SECURE=true.');
   }
   return Object.freeze(result.data);
 }
