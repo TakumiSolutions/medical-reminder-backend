@@ -86,3 +86,9 @@ export async function replaceToken(conn, id, { tokenHash, tokenPrefix }) {
 export async function revoke(conn, id) {
   await conn('agents').where({ id }).update({ is_active: false, revoked_at: conn.fn.now() });
 }
+
+/** Ids of branches that have at least one active desktop agent. */
+export async function listActiveBranchIds() {
+  const ids = await db('agents').where({ is_active: true }).distinct('branch_id').pluck('branch_id');
+  return new Set(ids.map(Number));
+}

@@ -1,5 +1,42 @@
-// Read-only queries against a branch's ProntoZ export database (CustomerList / CustomerBills).
-// CustomerList has no id: a customer row is identified by (Phone, Patient, Address).
+// Read-only customer queries over a branch's ProntoZ data, in the shape of the export's
+// CustomerList / CustomerBills tables. The data comes either from the export database or,
+// for branches with an RxBridge desktop agent, from the bills it sends (agent_bills).
+// A customer row has no id: it is identified by (Phone, Patient, Address).
+
+/** Source over the ProntoZ export database's own tables. */
+export const exportSource = (conn) => ({
+  conn,
+  list: (alias) => `CustomerList as ${alias}`,
+  bills: (alias) => `CustomerBills as ${alias}`,
+});
+
+// agent_bills.phone is stored as +91XXXXXXXXXX; the export holds the bare 10 digits.
+const AGENT_PHONE = "CASE WHEN ab.phone LIKE '+91%' THEN SUBSTRING(ab.phone, 4) ELSE ab.phone END";
+
+/** Source over the bills an RxBridge agent sent for `branchId` (main database). */
+export const agentBillsSource = (conn, branchId) => ({
+  conn,
+  list: (alias) =>
+    conn.raw(
+      `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
+               COUNT(*) AS Bills, SUM(ab.item_count) AS Items, SUM(ab.total) AS TotalSpend,
+               DATE_FORMAT(MIN(ab.bill_date), '%Y-%m-%d') AS FirstBill,
+               DATE_FORMAT(MAX(ab.bill_date), '%Y-%m-%d') AS LastBill
+        FROM agent_bills ab
+        WHERE ab.branch_id = ?
+        GROUP BY ab.phone, ab.patient_name, ab.address) AS ??`,
+      [branchId, alias],
+    ),
+  bills: (alias) =>
+    conn.raw(
+      `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
+               ab.doctor AS Doctor, ab.bill_date AS BillDate, i.product AS Product, i.qty AS Qty, i.pack AS Pack
+        FROM agent_bills ab
+        LEFT JOIN agent_bill_items i ON i.agent_bill_id = ab.id
+        WHERE ab.branch_id = ?) AS ??`,
+      [branchId, alias],
+    ),
+});
 
 // SQL classification of the raw Phone column, matching normalizeIndianMobile for 10-char values.
 const PHONE = 'TRIM(`Phone`)';
@@ -23,8 +60,9 @@ function applySearch(query, search) {
 }
 
 /** Bills of the CustomerList row `l` on its last bill date. */
-const lastBillLines = (conn) =>
-  conn('CustomerBills as b')
+const lastBillLines = (src) =>
+  src.conn
+    .from(src.bills('b'))
     .whereRaw('b.Phone <=> l.Phone')
     .whereRaw('b.Patient <=> l.Patient')
     .whereRaw('b.Address <=> l.Address')
@@ -34,10 +72,11 @@ const lastBillLines = (conn) =>
  * Rows of CustomerList, plus counts by mobile status for the same search/medicine filter.
  * `medicine` keeps customers whose last bill contains that product.
  */
-export async function list(conn, { search, mobileStatus, medicine, limit, offset }) {
-  const base = conn('CustomerList as l');
+export async function list(src, { search, mobileStatus, medicine, limit, offset }) {
+  const { conn } = src;
+  const base = conn.from(src.list('l'));
   applySearch(base, search);
-  if (medicine) base.whereExists(lastBillLines(conn).where('b.Product', medicine).select(conn.raw('1')));
+  if (medicine) base.whereExists(lastBillLines(src).where('b.Product', medicine).select(conn.raw('1')));
 
   const [counts] = await base
     .clone()
@@ -70,11 +109,12 @@ export const customerKey = (row) => rowKey(row.Phone?.trim() || null, row.Patien
  * Products (and the doctor) on each row's last bill date.
  * @returns {Map<string, { doctor: string|null, medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
  */
-export async function lastBillDetails(conn, rows) {
+export async function lastBillDetails(src, rows) {
   const result = new Map();
   if (rows.length === 0) return result;
 
-  const lines = await conn('CustomerBills')
+  const lines = await src.conn
+    .from(src.bills('b'))
     .where((q) => {
       for (const row of rows) {
         q.orWhere((w) => {
@@ -99,9 +139,11 @@ export async function lastBillDetails(conn, rows) {
 }
 
 /** Products that appear on any customer's last bill, for the medicine filter. */
-export async function listLastBillMedicines(conn) {
-  return conn('CustomerList as l')
-    .join('CustomerBills as b', function onLastBill() {
+export async function listLastBillMedicines(src) {
+  const { conn } = src;
+  return conn
+    .from(src.list('l'))
+    .join(src.bills('b'), function onLastBill() {
       this.on(conn.raw('b.Phone <=> l.Phone'))
         .andOn(conn.raw('b.Patient <=> l.Patient'))
         .andOn(conn.raw('b.Address <=> l.Address'))

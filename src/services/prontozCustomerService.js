@@ -1,39 +1,52 @@
 import { hasBranches } from '../config/permissions.js';
+import { db } from '../db/knex.js';
 import { prontozBranchCodes, prontozDbFor } from '../db/prontozDb.js';
 import * as accessRepository from '../repositories/accessRepository.js';
+import * as agentRepository from '../repositories/agentRepository.js';
 import * as customerRepository from '../repositories/customerRepository.js';
 import * as prontozCustomerRepository from '../repositories/prontozCustomerRepository.js';
 import { AppError, badRequest, forbidden } from '../utils/errors.js';
 import { normalizeIndianMobile } from '../utils/phone.js';
 
-const unavailable = () =>
-  new AppError(503, 'SOURCE_UNAVAILABLE', 'Could not read the ProntoZ export database. Check that it is running.');
+const UNAVAILABLE = {
+  rxbridge: 'Could not read the bills sent by RxBridge. Try again shortly.',
+  export: 'Could not read the ProntoZ export database. Check that it is running.',
+};
 
-/** Branches with a configured ProntoZ export that the caller has access to. */
+/** Branches with ProntoZ data (an RxBridge agent or a configured export) that the caller can see. */
 export async function listSources(auth) {
   const codes = new Set(prontozBranchCodes());
+  const agentBranchIds = await agentRepository.listActiveBranchIds();
   const branches = await accessRepository.listActiveBranches();
-  return branches.filter((b) => codes.has(b.code) && hasBranches(auth, [b.id]));
+  return branches.filter((b) => (agentBranchIds.has(b.id) || codes.has(b.code)) && hasBranches(auth, [b.id]));
 }
 
-/** Each branch has its own ProntoZ data; users only see the branches they belong to. */
+/**
+ * Each branch has its own ProntoZ data; users only see the branches they belong to.
+ * A branch with an active RxBridge agent uses the bills it sends; otherwise its export database.
+ */
 async function resolveSource(auth, branchId) {
   const branch = (await accessRepository.listActiveBranches()).find((b) => b.id === branchId);
   if (!branch) throw badRequest('Unknown or inactive branch.');
   if (!hasBranches(auth, [branch.id])) throw forbidden('You do not have access to that branch.');
+  if ((await agentRepository.listActiveBranchIds()).has(branch.id)) {
+    return { branch, kind: 'rxbridge', src: prontozCustomerRepository.agentBillsSource(db, branch.id) };
+  }
   const conn = prontozDbFor(branch.code);
-  if (!conn) throw new AppError(503, 'NOT_CONFIGURED', `No ProntoZ export is configured for ${branch.name}.`);
-  return { branch, conn };
+  if (!conn) throw new AppError(503, 'NOT_CONFIGURED', `No ProntoZ data is available for ${branch.name}.`);
+  return { branch, kind: 'export', src: prontozCustomerRepository.exportSource(conn) };
 }
 
-async function run(query) {
+async function run(kind, query) {
   try {
     return await query();
   } catch (error) {
-    console.error('ProntoZ export query failed:', error.code ?? error.message);
-    throw unavailable();
+    console.error(`ProntoZ ${kind} query failed:`, error.code ?? error.message);
+    throw new AppError(503, 'SOURCE_UNAVAILABLE', UNAVAILABLE[kind]);
   }
 }
+
+const toNumber = (value) => (value === null || value === undefined ? null : Number(value));
 
 function toCustomer(row, details, cloudByMobile, branchId) {
   const phone = row.Phone?.trim() || null;
@@ -47,9 +60,9 @@ function toCustomer(row, details, cloudByMobile, branchId) {
     mobileStatus: !phone ? 'missing' : normalized.ok ? 'valid' : 'invalid',
     patient: row.Patient,
     address: row.Address,
-    bills: row.Bills,
-    items: row.Items,
-    totalSpend: row.TotalSpend === null ? null : Number(row.TotalSpend),
+    bills: toNumber(row.Bills),
+    items: toNumber(row.Items),
+    totalSpend: toNumber(row.TotalSpend),
     firstBill: row.FirstBill,
     lastBill: row.LastBill,
     lastBillDoctor: details?.doctor ?? null,
@@ -62,17 +75,17 @@ function toCustomer(row, details, cloudByMobile, branchId) {
 }
 
 export async function listCustomers(auth, { branchId, search, mobileStatus, medicine, page, pageSize }) {
-  const { branch, conn } = await resolveSource(auth, branchId);
+  const { branch, kind, src } = await resolveSource(auth, branchId);
 
-  const { result, details } = await run(async () => {
-    const listed = await prontozCustomerRepository.list(conn, {
+  const { result, details } = await run(kind, async () => {
+    const listed = await prontozCustomerRepository.list(src, {
       search,
       mobileStatus,
       medicine,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });
-    return { result: listed, details: await prontozCustomerRepository.lastBillDetails(conn, listed.rows) };
+    return { result: listed, details: await prontozCustomerRepository.lastBillDetails(src, listed.rows) };
   });
 
   const mobiles = result.rows
@@ -87,6 +100,8 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
     ),
     counts: result.counts,
     branch,
+    // Where the list comes from: bills sent by RxBridge, or the ProntoZ export database.
+    source: kind,
     page,
     pageSize,
     total: result.total,
@@ -94,6 +109,6 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
 }
 
 export async function listMedicines(auth, { branchId }) {
-  const { conn } = await resolveSource(auth, branchId);
-  return run(() => prontozCustomerRepository.listLastBillMedicines(conn));
+  const { kind, src } = await resolveSource(auth, branchId);
+  return run(kind, () => prontozCustomerRepository.listLastBillMedicines(src));
 }
