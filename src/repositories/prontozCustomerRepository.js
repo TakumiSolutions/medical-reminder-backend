@@ -30,7 +30,8 @@ export const agentBillsSource = (conn, branchId) => ({
   bills: (alias) =>
     conn.raw(
       `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
-               ab.doctor AS Doctor, ab.bill_date AS BillDate, i.product AS Product, i.qty AS Qty, i.pack AS Pack
+               ab.doctor AS Doctor, ab.bill_no AS BillNo, ab.bill_date AS BillDate,
+               i.product AS Product, i.qty AS Qty, i.pack AS Pack
         FROM agent_bills ab
         LEFT JOIN agent_bill_items i ON i.agent_bill_id = ab.id
         WHERE ab.branch_id = ?) AS ??`,
@@ -106,8 +107,8 @@ const rowKey = (phone, patient, address) => JSON.stringify([phone ?? null, patie
 export const customerKey = (row) => rowKey(row.Phone?.trim() || null, row.Patient, row.Address);
 
 /**
- * Products (and the doctor) on each row's last bill date.
- * @returns {Map<string, { doctor: string|null, medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
+ * Products, bill numbers and the doctor on each row's last bill date.
+ * @returns {Map<string, { doctor: string|null, billNos: string[], medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
  */
 export async function lastBillDetails(src, rows) {
   const result = new Map();
@@ -123,18 +124,22 @@ export async function lastBillDetails(src, rows) {
         });
       }
     })
-    .select('Phone', 'Patient', 'Address', 'Doctor', 'Product', 'Qty', 'Pack')
+    .select('Phone', 'Patient', 'Address', 'Doctor', 'BillNo', 'Product', 'Qty', 'Pack')
     .orderBy('Product');
 
   for (const line of lines) {
     const key = customerKey(line);
-    if (!result.has(key)) result.set(key, { doctor: null, medicines: [] });
+    if (!result.has(key)) result.set(key, { doctor: null, billNos: [], medicines: [] });
     const entry = result.get(key);
     entry.doctor ??= line.Doctor;
+    // A customer can have more than one bill on their last bill date.
+    const billNo = line.BillNo?.trim();
+    if (billNo && !entry.billNos.includes(billNo)) entry.billNos.push(billNo);
     const existing = entry.medicines.find((m) => m.product === line.Product);
     if (existing) existing.qty += Number(line.Qty ?? 0);
     else if (line.Product) entry.medicines.push({ product: line.Product, qty: Number(line.Qty ?? 0), pack: line.Pack });
   }
+  for (const entry of result.values()) entry.billNos.sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
   return result;
 }
 

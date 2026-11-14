@@ -258,3 +258,10 @@ Errors use one shape: `{ "error": { "code", "message", "details?" } }`.
 ## Time
 
 All database timestamps are stored in UTC.
+
+## Docker / Back4App
+
+The `Dockerfile` builds a production image that listens on port **4000**, runs `db:setup`
+(create database + migrate) and then starts the API. On Back4App Containers set the app's
+port to `4000` and add the variables from `.env.example` (with `NODE_ENV=production`,
+`DB_SSL=true` for TiDB Cloud). Health check path: `/api/health`.

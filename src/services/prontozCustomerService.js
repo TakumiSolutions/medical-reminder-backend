@@ -65,6 +65,8 @@ function toCustomer(row, details, cloudByMobile, branchId) {
     totalSpend: toNumber(row.TotalSpend),
     firstBill: row.FirstBill,
     lastBill: row.LastBill,
+    // Bill number(s) on the last bill date, e.g. ["CA-T/1234"].
+    lastBillNos: details?.billNos ?? [],
     lastBillDoctor: details?.doctor ?? null,
     lastBillMedicines: details?.medicines ?? [],
     // Already a cloud customer at this branch (cannot be added again).
