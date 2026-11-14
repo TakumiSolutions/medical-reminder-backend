@@ -48,29 +48,27 @@ async function run(kind, query) {
 
 const toNumber = (value) => (value === null || value === undefined ? null : Number(value));
 
-function toCustomer(row, details, cloudByMobile, branchId) {
+function toBill(row, medicines, cloudByMobile, branchId) {
   const phone = row.Phone?.trim() || null;
   const normalized = phone ? normalizeIndianMobile(phone) : null;
   const mobile = normalized?.ok ? normalized.value : null;
   const cloud = mobile ? cloudByMobile.get(mobile) : undefined;
   const atThisBranch = Boolean(cloud?.branchIds.includes(branchId));
   return {
+    billKey: String(row.BillKey),
+    billNo: row.BillNo ?? null,
+    billDate: row.BillDate,
     phone,
     mobile,
     mobileStatus: !phone ? 'missing' : normalized.ok ? 'valid' : 'invalid',
     patient: row.Patient,
     address: row.Address,
-    bills: toNumber(row.Bills),
+    doctor: row.Doctor ?? null,
+    total: toNumber(row.Total),
     items: toNumber(row.Items),
-    totalSpend: toNumber(row.TotalSpend),
-    firstBill: row.FirstBill,
-    lastBill: row.LastBill,
-    // Bill number(s) on the last bill date, e.g. ["CA-T/1234"].
-    lastBillNos: details?.billNos ?? [],
-    // Remarks typed on those bills in Prompt Rx (RxBridge branches only).
-    lastBillRemarks: details?.remarks ?? [],
-    lastBillDoctor: details?.doctor ?? null,
-    lastBillMedicines: details?.medicines ?? [],
+    // Remark typed on the bill in Prompt Rx (RxBridge branches only).
+    remarks: row.Remarks?.trim() || null,
+    medicines: medicines ?? [],
     // Already a cloud customer at this branch (cannot be added again).
     customerId: atThisBranch ? cloud.id : null,
     // A cloud customer at another branch only; adding links them to this branch.
@@ -78,10 +76,11 @@ function toCustomer(row, details, cloudByMobile, branchId) {
   };
 }
 
+/** One row per bill, newest first. */
 export async function listCustomers(auth, { branchId, search, mobileStatus, medicine, page, pageSize }) {
   const { branch, kind, src } = await resolveSource(auth, branchId);
 
-  const { result, details } = await run(kind, async () => {
+  const { result, medicines } = await run(kind, async () => {
     const listed = await prontozCustomerRepository.list(src, {
       search,
       mobileStatus,
@@ -89,7 +88,7 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });
-    return { result: listed, details: await prontozCustomerRepository.lastBillDetails(src, listed.rows) };
+    return { result: listed, medicines: await prontozCustomerRepository.billMedicines(src, listed.rows) };
   });
 
   const mobiles = result.rows
@@ -99,9 +98,7 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
   const cloudByMobile = await customerRepository.findByMobiles([...new Set(mobiles)]);
 
   return {
-    items: result.rows.map((row) =>
-      toCustomer(row, details.get(prontozCustomerRepository.customerKey(row)), cloudByMobile, branch.id),
-    ),
+    items: result.rows.map((row) => toBill(row, medicines.get(String(row.BillKey)), cloudByMobile, branch.id)),
     counts: result.counts,
     branch,
     // Where the list comes from: bills sent by RxBridge, or the ProntoZ export database.
@@ -114,5 +111,5 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
 
 export async function listMedicines(auth, { branchId }) {
   const { kind, src } = await resolveSource(auth, branchId);
-  return run(kind, () => prontozCustomerRepository.listLastBillMedicines(src));
+  return run(kind, () => prontozCustomerRepository.listMedicines(src));
 }

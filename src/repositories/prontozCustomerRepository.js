@@ -1,15 +1,41 @@
-// Read-only customer queries over a branch's ProntoZ data, in the shape of the export's
-// CustomerList / CustomerBills tables. The data comes either from the export database or,
+// Read-only bill queries over a branch's ProntoZ data: one row per bill, newest first.
+// The data comes either from the export database (CustomerBills, one row per bill line) or,
 // for branches with an RxBridge desktop agent, from the bills it sends (agent_bills).
-// A customer row has no id: it is identified by (Phone, Patient, Address).
+//
+// Each source exposes the same derived table `b` with columns:
+//   BillKey, SortKey, Phone, Patient, Address, Doctor, BillNo, BillDate (YYYY-MM-DD), Total, Items, Remarks
+// plus `medicineFilter` (EXISTS on the bill's lines), `lines(rows)` and `medicines()`.
 
-/** Source over the ProntoZ export database's own tables. */
+/** Source over the ProntoZ export database's CustomerBills table (one row per bill line). */
 export const exportSource = (conn) => ({
   conn,
-  // The export has no remarks column.
-  hasRemarks: false,
-  list: (alias) => `CustomerList as ${alias}`,
-  bills: (alias) => `CustomerBills as ${alias}`,
+  bills: (alias) =>
+    conn.raw(
+      // A bill is its (BillNo, BillDate); its header fields repeat on every line.
+      `(SELECT CONCAT(COALESCE(BillNo, ''), '|', COALESCE(DATE_FORMAT(BillDate, '%Y-%m-%d'), '')) AS BillKey,
+               BillNo AS SortKey, MAX(Phone) AS Phone, MAX(Patient) AS Patient, MAX(Address) AS Address,
+               MAX(Doctor) AS Doctor, BillNo, DATE_FORMAT(BillDate, '%Y-%m-%d') AS BillDate,
+               MAX(BillTotal) AS Total, COUNT(*) AS Items, NULL AS Remarks
+        FROM CustomerBills
+        GROUP BY BillNo, BillDate) AS ??`,
+      [alias],
+    ),
+  medicineFilter: (medicine) =>
+    conn.raw(
+      'EXISTS (SELECT 1 FROM CustomerBills x WHERE x.BillNo <=> b.BillNo AND x.BillDate <=> b.BillDate AND x.Product = ?)',
+      [medicine],
+    ),
+  async lines(rows) {
+    if (rows.length === 0) return [];
+    const lines = await conn('CustomerBills')
+      .where((q) => {
+        for (const row of rows) q.orWhere((w) => w.whereRaw('BillNo <=> ?', [row.BillNo]).whereRaw('BillDate <=> ?', [row.BillDate]));
+      })
+      .select('BillNo', conn.raw("DATE_FORMAT(BillDate, '%Y-%m-%d') AS BillDate"), 'Product', 'Qty', 'Pack')
+      .orderBy('Product');
+    return lines.map((l) => ({ BillKey: `${l.BillNo ?? ''}|${l.BillDate ?? ''}`, Product: l.Product, Qty: l.Qty, Pack: l.Pack }));
+  },
+  medicines: () => conn('CustomerBills').whereNotNull('Product').distinct('Product').orderBy('Product').pluck('Product'),
 });
 
 // agent_bills.phone is stored as +91XXXXXXXXXX; the export holds the bare 10 digits.
@@ -18,33 +44,39 @@ const AGENT_PHONE = "CASE WHEN ab.phone LIKE '+91%' THEN SUBSTRING(ab.phone, 4) 
 /** Source over the bills an RxBridge agent sent for `branchId` (main database). */
 export const agentBillsSource = (conn, branchId) => ({
   conn,
-  hasRemarks: true,
-  list: (alias) =>
-    conn.raw(
-      `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
-               COUNT(*) AS Bills, SUM(ab.item_count) AS Items, SUM(ab.total) AS TotalSpend,
-               DATE_FORMAT(MIN(ab.bill_date), '%Y-%m-%d') AS FirstBill,
-               DATE_FORMAT(MAX(ab.bill_date), '%Y-%m-%d') AS LastBill
-        FROM agent_bills ab
-        WHERE ab.branch_id = ?
-        GROUP BY ab.phone, ab.patient_name, ab.address) AS ??`,
-      [branchId, alias],
-    ),
   bills: (alias) =>
     conn.raw(
-      `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
-               ab.doctor AS Doctor, ab.bill_no AS BillNo, ab.remarks AS Remarks, ab.bill_date AS BillDate,
-               i.product AS Product, i.qty AS Qty, i.pack AS Pack
+      `(SELECT CAST(ab.id AS CHAR) AS BillKey, ab.id AS SortKey, ${AGENT_PHONE} AS Phone,
+               ab.patient_name AS Patient, ab.address AS Address, ab.doctor AS Doctor, ab.bill_no AS BillNo,
+               DATE_FORMAT(ab.bill_date, '%Y-%m-%d') AS BillDate, ab.total AS Total, ab.item_count AS Items,
+               ab.remarks AS Remarks
         FROM agent_bills ab
-        LEFT JOIN agent_bill_items i ON i.agent_bill_id = ab.id
         WHERE ab.branch_id = ?) AS ??`,
       [branchId, alias],
     ),
+  medicineFilter: (medicine) =>
+    conn.raw('EXISTS (SELECT 1 FROM agent_bill_items x WHERE x.agent_bill_id = b.SortKey AND x.product = ?)', [medicine]),
+  async lines(rows) {
+    if (rows.length === 0) return [];
+    const lines = await conn('agent_bill_items')
+      .whereIn('agent_bill_id', rows.map((r) => r.SortKey))
+      .select('agent_bill_id', 'product', 'qty', 'pack')
+      .orderBy('product');
+    return lines.map((l) => ({ BillKey: String(l.agent_bill_id), Product: l.product, Qty: l.qty, Pack: l.pack }));
+  },
+  medicines: () =>
+    conn('agent_bill_items as i')
+      .join('agent_bills as ab', 'ab.id', 'i.agent_bill_id')
+      .where('ab.branch_id', branchId)
+      .whereNotNull('i.product')
+      .distinct('i.product')
+      .orderBy('i.product')
+      .pluck('i.product'),
 });
 
 // SQL classification of the raw Phone column, matching normalizeIndianMobile for 10-char values.
-const PHONE = 'TRIM(`Phone`)';
-const IS_MISSING = `(\`Phone\` IS NULL OR ${PHONE} = '')`;
+const PHONE = 'TRIM(b.`Phone`)';
+const IS_MISSING = `(b.\`Phone\` IS NULL OR ${PHONE} = '')`;
 const IS_VALID = `${PHONE} REGEXP '^[6-9][0-9]{9}$'`;
 
 const MOBILE_FILTERS = {
@@ -58,45 +90,32 @@ function applySearch(query, search) {
   const pattern = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
   const digits = search.replace(/\D/g, '');
   query.where((q) => {
-    q.where('l.Patient', 'like', pattern).orWhere('l.Address', 'like', pattern);
-    if (digits.length >= 3) q.orWhere('l.Phone', 'like', `%${digits}%`);
+    q.where('b.Patient', 'like', pattern).orWhere('b.Address', 'like', pattern).orWhere('b.BillNo', 'like', pattern);
+    if (digits.length >= 3) q.orWhere('b.Phone', 'like', `%${digits}%`);
   });
 }
 
-/** Bills of the CustomerList row `l` on its last bill date. */
-const lastBillLines = (src) =>
-  src.conn
-    .from(src.bills('b'))
-    .whereRaw('b.Phone <=> l.Phone')
-    .whereRaw('b.Patient <=> l.Patient')
-    .whereRaw('b.Address <=> l.Address')
-    .whereRaw('b.BillDate = l.LastBill');
-
 /**
- * Rows of CustomerList, plus counts by mobile status for the same search/medicine filter.
- * `medicine` keeps customers whose last bill contains that product.
+ * One row per bill, newest first, plus counts by mobile status for the same search/medicine filter.
+ * `medicine` keeps bills that contain that product.
  */
 export async function list(src, { search, mobileStatus, medicine, limit, offset }) {
   const { conn } = src;
-  const base = conn.from(src.list('l'));
+  const base = conn.from(src.bills('b'));
   applySearch(base, search);
-  if (medicine) base.whereExists(lastBillLines(src).where('b.Product', medicine).select(conn.raw('1')));
+  if (medicine) base.whereRaw(src.medicineFilter(medicine));
 
   const [counts] = await base
     .clone()
-    .select(
-      conn.raw('COUNT(*) AS total'),
-      conn.raw(`SUM(${IS_VALID.replaceAll('`Phone`', 'l.`Phone`')}) AS valid`),
-      conn.raw(`SUM(${IS_MISSING.replaceAll('`Phone`', 'l.`Phone`')}) AS missing`),
-    );
+    .select(conn.raw('COUNT(*) AS total'), conn.raw(`SUM(${IS_VALID}) AS valid`), conn.raw(`SUM(${IS_MISSING}) AS missing`));
 
   const query = base.clone();
   if (mobileStatus !== 'all') MOBILE_FILTERS[mobileStatus](query);
   const [{ total }] = await query.clone().count({ total: '*' });
   const rows = await query
-    .select('l.Phone', 'l.Patient', 'l.Address', 'l.Bills', 'l.Items', 'l.TotalSpend', 'l.FirstBill', 'l.LastBill')
-    .orderBy('l.LastBill', 'desc')
-    .orderBy('l.Patient')
+    .select('b.BillKey', 'b.SortKey', 'b.Phone', 'b.Patient', 'b.Address', 'b.Doctor', 'b.BillNo', 'b.BillDate', 'b.Total', 'b.Items', 'b.Remarks')
+    .orderBy('b.BillDate', 'desc')
+    .orderBy('b.SortKey', 'desc')
     .limit(limit)
     .offset(offset);
 
@@ -106,62 +125,22 @@ export async function list(src, { search, mobileStatus, medicine, limit, offset 
   return { rows, total: Number(total), counts: { all, valid, missing, invalid: all - valid - missing } };
 }
 
-const rowKey = (phone, patient, address) => JSON.stringify([phone ?? null, patient ?? null, address ?? null]);
-export const customerKey = (row) => rowKey(row.Phone?.trim() || null, row.Patient, row.Address);
-
 /**
- * Products, bill numbers, remarks and the doctor on each row's last bill date.
- * @returns {Map<string, { doctor: string|null, billNos: string[], remarks: string[], medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
+ * Medicines on each listed bill (quantities of a repeated product added up).
+ * @returns {Map<string, Array<{ product, qty, pack }>>} keyed by BillKey
  */
-export async function lastBillDetails(src, rows) {
+export async function billMedicines(src, rows) {
   const result = new Map();
-  if (rows.length === 0) return result;
-
-  const lines = await src.conn
-    .from(src.bills('b'))
-    .where((q) => {
-      for (const row of rows) {
-        q.orWhere((w) => {
-          w.whereRaw('Phone <=> ?', [row.Phone]).whereRaw('Patient <=> ?', [row.Patient]).whereRaw('Address <=> ?', [row.Address]);
-          w.where('BillDate', row.LastBill);
-        });
-      }
-    })
-    .select('Phone', 'Patient', 'Address', 'Doctor', 'BillNo', 'Product', 'Qty', 'Pack')
-    .select(src.hasRemarks ? 'Remarks' : src.conn.raw('NULL AS Remarks'))
-    .orderBy('Product');
-
-  for (const line of lines) {
-    const key = customerKey(line);
-    if (!result.has(key)) result.set(key, { doctor: null, billNos: [], remarks: [], medicines: [] });
-    const entry = result.get(key);
-    entry.doctor ??= line.Doctor;
-    // A customer can have more than one bill on their last bill date.
-    const billNo = line.BillNo?.trim();
-    if (billNo && !entry.billNos.includes(billNo)) entry.billNos.push(billNo);
-    const remark = line.Remarks?.trim();
-    if (remark && !entry.remarks.includes(remark)) entry.remarks.push(remark);
-    const existing = entry.medicines.find((m) => m.product === line.Product);
+  for (const line of await src.lines(rows)) {
+    if (!line.Product) continue;
+    if (!result.has(line.BillKey)) result.set(line.BillKey, []);
+    const medicines = result.get(line.BillKey);
+    const existing = medicines.find((m) => m.product === line.Product);
     if (existing) existing.qty += Number(line.Qty ?? 0);
-    else if (line.Product) entry.medicines.push({ product: line.Product, qty: Number(line.Qty ?? 0), pack: line.Pack });
+    else medicines.push({ product: line.Product, qty: Number(line.Qty ?? 0), pack: line.Pack });
   }
-  for (const entry of result.values()) entry.billNos.sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
   return result;
 }
 
-/** Products that appear on any customer's last bill, for the medicine filter. */
-export async function listLastBillMedicines(src) {
-  const { conn } = src;
-  return conn
-    .from(src.list('l'))
-    .join(src.bills('b'), function onLastBill() {
-      this.on(conn.raw('b.Phone <=> l.Phone'))
-        .andOn(conn.raw('b.Patient <=> l.Patient'))
-        .andOn(conn.raw('b.Address <=> l.Address'))
-        .andOn('b.BillDate', '=', 'l.LastBill');
-    })
-    .whereNotNull('b.Product')
-    .distinct('b.Product')
-    .orderBy('b.Product')
-    .pluck('b.Product');
-}
+/** Products that appear on any of the branch's bills, for the medicine filter. */
+export const listMedicines = (src) => src.medicines();
