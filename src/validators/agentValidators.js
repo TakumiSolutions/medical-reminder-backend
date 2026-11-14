@@ -84,6 +84,9 @@ const billSchema = z.object({
   patient: text(150),
   address: text(500),
   doctor: text(150),
+  // Sent by RxBridge 0.1.2 and later. Left undefined when absent so older agents' request
+  // hashes (idempotency) stay the same.
+  remarks: text(500).optional(),
   total: decimal(),
   items: z.array(billItemSchema).max(MAX_ITEMS_PER_BILL, `At most ${MAX_ITEMS_PER_BILL} items per bill.`).default([]),
 });

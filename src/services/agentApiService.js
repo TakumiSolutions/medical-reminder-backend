@@ -40,6 +40,7 @@ export function toBillRow(bill) {
     patient_name: bill.patient,
     address: bill.address,
     doctor: bill.doctor,
+    remarks: bill.remarks ?? null,
     total: bill.total,
     items: bill.items.map((item) => ({
       product: item.product,

@@ -67,6 +67,8 @@ function toCustomer(row, details, cloudByMobile, branchId) {
     lastBill: row.LastBill,
     // Bill number(s) on the last bill date, e.g. ["CA-T/1234"].
     lastBillNos: details?.billNos ?? [],
+    // Remarks typed on those bills in Prompt Rx (RxBridge branches only).
+    lastBillRemarks: details?.remarks ?? [],
     lastBillDoctor: details?.doctor ?? null,
     lastBillMedicines: details?.medicines ?? [],
     // Already a cloud customer at this branch (cannot be added again).

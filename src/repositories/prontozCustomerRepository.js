@@ -6,6 +6,8 @@
 /** Source over the ProntoZ export database's own tables. */
 export const exportSource = (conn) => ({
   conn,
+  // The export has no remarks column.
+  hasRemarks: false,
   list: (alias) => `CustomerList as ${alias}`,
   bills: (alias) => `CustomerBills as ${alias}`,
 });
@@ -16,6 +18,7 @@ const AGENT_PHONE = "CASE WHEN ab.phone LIKE '+91%' THEN SUBSTRING(ab.phone, 4) 
 /** Source over the bills an RxBridge agent sent for `branchId` (main database). */
 export const agentBillsSource = (conn, branchId) => ({
   conn,
+  hasRemarks: true,
   list: (alias) =>
     conn.raw(
       `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
@@ -30,7 +33,7 @@ export const agentBillsSource = (conn, branchId) => ({
   bills: (alias) =>
     conn.raw(
       `(SELECT ${AGENT_PHONE} AS Phone, ab.patient_name AS Patient, ab.address AS Address,
-               ab.doctor AS Doctor, ab.bill_no AS BillNo, ab.bill_date AS BillDate,
+               ab.doctor AS Doctor, ab.bill_no AS BillNo, ab.remarks AS Remarks, ab.bill_date AS BillDate,
                i.product AS Product, i.qty AS Qty, i.pack AS Pack
         FROM agent_bills ab
         LEFT JOIN agent_bill_items i ON i.agent_bill_id = ab.id
@@ -107,8 +110,8 @@ const rowKey = (phone, patient, address) => JSON.stringify([phone ?? null, patie
 export const customerKey = (row) => rowKey(row.Phone?.trim() || null, row.Patient, row.Address);
 
 /**
- * Products, bill numbers and the doctor on each row's last bill date.
- * @returns {Map<string, { doctor: string|null, billNos: string[], medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
+ * Products, bill numbers, remarks and the doctor on each row's last bill date.
+ * @returns {Map<string, { doctor: string|null, billNos: string[], remarks: string[], medicines: Array<{ product, qty, pack }> }>} keyed by customerKey
  */
 export async function lastBillDetails(src, rows) {
   const result = new Map();
@@ -125,16 +128,19 @@ export async function lastBillDetails(src, rows) {
       }
     })
     .select('Phone', 'Patient', 'Address', 'Doctor', 'BillNo', 'Product', 'Qty', 'Pack')
+    .select(src.hasRemarks ? 'Remarks' : src.conn.raw('NULL AS Remarks'))
     .orderBy('Product');
 
   for (const line of lines) {
     const key = customerKey(line);
-    if (!result.has(key)) result.set(key, { doctor: null, billNos: [], medicines: [] });
+    if (!result.has(key)) result.set(key, { doctor: null, billNos: [], remarks: [], medicines: [] });
     const entry = result.get(key);
     entry.doctor ??= line.Doctor;
     // A customer can have more than one bill on their last bill date.
     const billNo = line.BillNo?.trim();
     if (billNo && !entry.billNos.includes(billNo)) entry.billNos.push(billNo);
+    const remark = line.Remarks?.trim();
+    if (remark && !entry.remarks.includes(remark)) entry.remarks.push(remark);
     const existing = entry.medicines.find((m) => m.product === line.Product);
     if (existing) existing.qty += Number(line.Qty ?? 0);
     else if (line.Product) entry.medicines.push({ product: line.Product, qty: Number(line.Qty ?? 0), pack: line.Pack });
