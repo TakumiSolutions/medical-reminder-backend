@@ -43,15 +43,15 @@ const envSchema = z.object({
       }
     }, 'Unknown timezone.'),
 
-  // Optional read-only access to the ProntoZ export databases, one per branch.
+  // Optional read-only access to the Prompt export databases, one per branch.
   // The user should only have SELECT rights on those databases.
-  PRONTOZ_DB_HOST: z.string().min(1).optional(),
-  PRONTOZ_DB_PORT: z.coerce.number().int().positive().default(3306),
-  PRONTOZ_DB_USER: z.string().min(1).optional(),
-  PRONTOZ_DB_PASSWORD: z.string().default(''),
-  PRONTOZ_DB_SSL: booleanString.default(false),
+  PROMPT_DB_HOST: z.string().min(1).optional(),
+  PROMPT_DB_PORT: z.coerce.number().int().positive().default(3306),
+  PROMPT_DB_USER: z.string().min(1).optional(),
+  PROMPT_DB_PASSWORD: z.string().default(''),
+  PROMPT_DB_SSL: booleanString.default(false),
   // Branch code -> database name, e.g. "central:PharmacyExport,speedwell:PharmacyExportSpeedwell".
-  PRONTOZ_DATABASES: z
+  PROMPT_DATABASES: z
     .string()
     .default('')
     .transform((value, ctx) => {
@@ -66,6 +66,32 @@ const envSchema = z.object({
       }
       return map;
     }),
+
+  // WhatsApp reminders (Meta WhatsApp Cloud API). Each branch has its own number and token:
+  // WHATSAPP_<BRANCH CODE>_PHONE_NUMBER_ID and WHATSAPP_<BRANCH CODE>_ACCESS_TOKEN, e.g.
+  // WHATSAPP_CENTRAL_PHONE_NUMBER_ID. A branch without both sends nothing.
+  WHATSAPP_API_VERSION: z.string().regex(/^v\d+\.\d+$/, 'Use the form v21.0.').default('v21.0'),
+  // Approved message template, and what fills its {{1}}, {{2}}, … in order.
+  WHATSAPP_TEMPLATE_NAME: z.string().min(1).default('medicine_reminder'),
+  WHATSAPP_TEMPLATE_LANGUAGE: z.string().min(2).default('en'),
+  WHATSAPP_TEMPLATE_PARAMS: z
+    .string()
+    .default('customer,medicine')
+    .transform((value, ctx) => {
+      const params = value.split(',').map((p) => p.trim()).filter(Boolean);
+      const unknown = params.filter((p) => !['customer', 'medicine', 'branch', 'billdate'].includes(p));
+      if (unknown.length) {
+        ctx.addIssue({ code: 'custom', message: `Unknown template params: ${unknown.join(', ')} (use customer, medicine, branch, billdate).` });
+        return z.NEVER;
+      }
+      return params;
+    }),
+  // Webhook for customer replies (WhatsApp inbox): the App Secret signs each request, and the
+  // verify token is the one entered in Meta's webhook settings. Without both, the webhook is off.
+  WHATSAPP_APP_SECRET: z.string().min(1).optional(),
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: z.string().min(8, 'Use at least 8 characters.').optional(),
+  // Local time (APP_TIMEZONE) from which the day's reminders are sent.
+  WHATSAPP_SEND_TIME: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM (24-hour).').default('10:00'),
 });
 
 function loadEnv() {

@@ -5,6 +5,7 @@ import * as agentBillRepository from '../repositories/agentBillRepository.js';
 import * as agentRepository from '../repositories/agentRepository.js';
 import { AppError } from '../utils/errors.js';
 import { normalizeIndianMobile } from '../utils/phone.js';
+import { scheduleFromBillRemarks } from './billReminderService.js';
 
 const KEY_RETENTION_DAYS = 7;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -118,6 +119,13 @@ export async function ingestBills(agent, idempotencyKey, payload) {
   if (!result) return replay(await agentBillRepository.findIdempotencyKey(agent.id, idempotencyKey), requestHash);
 
   pruneOldKeys();
+  // Reminders from bill remarks are scheduled after answering, so the agent never waits on
+  // them (it times out after 30 s). A failure here is picked up by the periodic catch-up.
+  scheduleFromBillRemarks({
+    agentId: agent.id,
+    sourceDatabase: payload.source.database,
+    sourceBillIds: bills.filter((b) => b.remarks).map((b) => b.source_bill_id),
+  }).catch((error) => console.error('Scheduling reminders from bill remarks failed:', error.message));
   return result;
 }
 

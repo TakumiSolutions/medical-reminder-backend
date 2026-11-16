@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { planReminderDays } from '../src/services/reminderRules.js';
+import { joinMedicines } from '../src/services/billReminderService.js';
+import { parseRemarkDays, planReminderDays } from '../src/services/reminderRules.js';
 import { addDays, todayIn, toIsoDate } from '../src/utils/dates.js';
 import { scheduleRemindersSchema } from '../src/validators/reminderValidators.js';
 
@@ -26,16 +27,16 @@ describe('date helpers', () => {
 });
 
 describe('planReminderDays', () => {
-  it('plans days N, N+1, N+2 from the last bill date', () => {
-    assert.deepEqual(planReminderDays({ startDate: '2026-10-17', intervalDays: 27, today: '2026-10-17' }), [
-      { dayNumber: 27, scheduledDate: '2026-11-13', status: 'scheduled' },
+  it('plans days N-2, N-1, N from the last bill date', () => {
+    assert.deepEqual(planReminderDays({ startDate: '2026-10-17', intervalDays: 30, today: '2026-10-17' }), [
       { dayNumber: 28, scheduledDate: '2026-11-14', status: 'scheduled' },
       { dayNumber: 29, scheduledDate: '2026-11-15', status: 'scheduled' },
+      { dayNumber: 30, scheduledDate: '2026-11-16', status: 'scheduled' },
     ]);
   });
 
   it('marks dates that have already passed as skipped, keeping today', () => {
-    const days = planReminderDays({ startDate: '2026-09-20', intervalDays: 27, today: '2026-10-18' });
+    const days = planReminderDays({ startDate: '2026-09-20', intervalDays: 29, today: '2026-10-18' });
     assert.deepEqual(
       days.map((d) => [d.scheduledDate, d.status]),
       [
@@ -44,6 +45,37 @@ describe('planReminderDays', () => {
         ['2026-10-19', 'scheduled'],
       ],
     );
+  });
+
+  it('never plans a day on or before the bill date', () => {
+    const dayNumbers = (n) => planReminderDays({ startDate: '2026-10-17', intervalDays: n, today: '2026-10-17' }).map((d) => d.dayNumber);
+    assert.deepEqual(dayNumbers(3), [1, 2, 3]);
+    assert.deepEqual(dayNumbers(2), [1, 2]);
+    assert.deepEqual(dayNumbers(1), [1]);
+  });
+});
+
+describe('parseRemarkDays', () => {
+  it('reads a remark that is a number of days', () => {
+    for (const [remark, days] of [['30', 30], [' 15 ', 15], ['10 DAY', 10], ['45 days', 45], ['20d', 20], ['60.', 60], ['365', 365]]) {
+      assert.equal(parseRemarkDays(remark), days, remark);
+    }
+  });
+
+  it('ignores other remarks and out-of-range numbers', () => {
+    for (const remark of [null, '', 'hii this is for testing', 'call 9876543210', '2 strips', '30 tabs', '0', '366', 'after 30 days']) {
+      assert.equal(parseRemarkDays(remark), null, String(remark));
+    }
+  });
+});
+
+describe('joinMedicines', () => {
+  it('lists every medicine when they fit', () => {
+    assert.equal(joinMedicines(['TELMA 40', 'ECOSPRIN 75']), 'TELMA 40, ECOSPRIN 75');
+  });
+
+  it('counts the medicines that do not fit', () => {
+    assert.equal(joinMedicines(['TELMA 40', 'ECOSPRIN 75', 'DOLO 650'], 30), 'TELMA 40, ECOSPRIN 75 +1 more');
   });
 });
 
@@ -66,18 +98,32 @@ describe('schedule validator', () => {
 describe('outcome validator', async () => {
   const { recordOutcomeSchema } = await import('../src/validators/reminderValidators.js');
 
+  const items = [{ medicine: ' TELMA 40 ', quantity: 2 }];
+
   it('ordered needs delivery details: an address for delivery, nothing for pickup', () => {
     assert.equal(recordOutcomeSchema.safeParse({ outcome: 'ordered' }).success, false);
-    assert.equal(recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'delivery' } }).success, false);
+    assert.equal(recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'delivery', items } }).success, false);
     assert.equal(
-      recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'delivery', address: '  ' } }).success,
+      recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'delivery', address: '  ', items } }).success,
       false,
     );
     assert.deepEqual(
-      recordOutcomeSchema.parse({ outcome: 'ordered', delivery: { method: 'delivery', address: ' Raiya Road ' } }),
-      { outcome: 'ordered', delivery: { method: 'delivery', address: 'Raiya Road', saveAddress: false } },
+      recordOutcomeSchema.parse({ outcome: 'ordered', delivery: { method: 'delivery', address: ' Raiya Road ', items } }),
+      {
+        outcome: 'ordered',
+        delivery: { method: 'delivery', address: 'Raiya Road', saveAddress: false, items: [{ medicine: 'TELMA 40', quantity: 2 }] },
+      },
     );
-    assert.equal(recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'pickup' } }).success, true);
+    assert.equal(recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'pickup', items } }).success, true);
+  });
+
+  it('ordered needs at least one medicine with a positive quantity', () => {
+    const order = (lines) => recordOutcomeSchema.safeParse({ outcome: 'ordered', delivery: { method: 'pickup', items: lines } }).success;
+    assert.equal(order(undefined), false);
+    assert.equal(order([]), false);
+    assert.equal(order([{ medicine: '  ', quantity: 1 }]), false);
+    for (const quantity of [0, -1, 1.005, null]) assert.equal(order([{ medicine: 'TELMA 40', quantity }]), false, String(quantity));
+    for (const quantity of [1, 1.5, 0.29, 10.01]) assert.equal(order([{ medicine: 'TELMA 40', quantity }]), true, String(quantity));
   });
 
   it('refused needs a reason', () => {

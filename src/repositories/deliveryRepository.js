@@ -1,13 +1,30 @@
 import { db } from '../db/knex.js';
 import { DELIVERY_STATUSES } from '../services/deliveryRules.js';
 
-function toDelivery(row) {
+const toNumber = (value) => (value == null ? null : Number(value));
+
+/** Ordered medicines per delivery, keyed by delivery id. */
+export async function loadItems(deliveryIds, conn = db) {
+  const map = new Map();
+  if (deliveryIds.length === 0) return map;
+  const rows = await conn('delivery_items').whereIn('delivery_id', deliveryIds).orderBy(['delivery_id', 'line_no']);
+  for (const row of rows) {
+    const key = String(row.delivery_id);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ medicine: row.medicine, quantity: toNumber(row.quantity) });
+  }
+  return map;
+}
+
+function toDelivery(row, itemsByDelivery = new Map()) {
   return {
     id: String(row.id),
     reminderId: row.reminder_cycle_id ? String(row.reminder_cycle_id) : null,
     customer: { id: String(row.customer_id), fullName: row.full_name, mobile: row.mobile },
     branch: { id: row.branch_id, name: row.branch_name },
     medicine: row.medicine ?? null,
+    // What was ordered; empty for orders recorded before items were entered.
+    items: itemsByDelivery.get(String(row.id)) ?? [],
     method: row.method,
     address: row.address,
     status: row.status,
@@ -45,6 +62,11 @@ function applyFilters(query, { scopeBranchIds, assignedTo, search }) {
     query.where((q) => {
       q.where('customers.full_name', 'like', pattern)
         .orWhere('reminder_cycles.medicine', 'like', pattern)
+        .orWhereExists(
+          db('delivery_items')
+            .whereColumn('delivery_items.delivery_id', 'deliveries.id')
+            .where('delivery_items.medicine', 'like', pattern),
+        )
         .orWhere('deliveries.address', 'like', pattern);
       if (digits.length >= 3) q.orWhere('customers.mobile', 'like', `%${digits}%`);
     });
@@ -62,7 +84,8 @@ export async function list({ status, scopeBranchIds, assignedTo, search, limit, 
     .orderBy('deliveries.id')
     .limit(limit)
     .offset(offset);
-  return { items: rows.map(toDelivery), total: Number(total) };
+  const items = await loadItems(rows.map((r) => r.id));
+  return { items: rows.map((r) => toDelivery(r, items)), total: Number(total) };
 }
 
 /** Counts per status for the same filters (excluding the status itself). */
@@ -85,7 +108,7 @@ export async function findById(id, conn = db) {
     .orderBy('h.id')
     .select('h.from_status', 'h.to_status', 'h.note', 'h.created_at', 'u.full_name');
   return {
-    ...toDelivery(row),
+    ...toDelivery(row, await loadItems([row.id], conn)),
     history: history.map((h) => ({
       from: h.from_status,
       to: h.to_status,
@@ -119,7 +142,7 @@ async function addHistory(conn, { deliveryId, from, to, note, userId }) {
   });
 }
 
-export async function create(conn, { reminderCycleId, customerId, branchId, method, address, userId }) {
+export async function create(conn, { reminderCycleId, customerId, branchId, method, address, items = [], userId }) {
   const [id] = await conn('deliveries').insert({
     reminder_cycle_id: reminderCycleId,
     customer_id: customerId,
@@ -128,6 +151,11 @@ export async function create(conn, { reminderCycleId, customerId, branchId, meth
     address: method === 'delivery' ? address : null,
     created_by: userId,
   });
+  if (items.length) {
+    await conn('delivery_items').insert(
+      items.map((item, index) => ({ delivery_id: id, line_no: index + 1, medicine: item.medicine, quantity: item.quantity })),
+    );
+  }
   await addHistory(conn, { deliveryId: id, from: null, to: 'pending', userId });
   return String(id);
 }

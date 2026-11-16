@@ -8,12 +8,14 @@ export const PERMISSIONS = Object.freeze({
   AUDIT_LOGS_READ: 'audit_logs.read',
   CUSTOMERS_READ: 'customers.read',
   CUSTOMERS_MANAGE: 'customers.manage',
-  PRONTOZ_CUSTOMERS_READ: 'prontoz_customers.read',
+  PROMPT_CUSTOMERS_READ: 'prompt_customers.read',
   REMINDERS_READ: 'reminders.read',
   REMINDERS_MANAGE: 'reminders.manage',
   DELIVERIES_READ: 'deliveries.read',
   DELIVERIES_MANAGE: 'deliveries.manage',
   AGENTS_MANAGE: 'agents.manage',
+  WHATSAPP_INBOX_READ: 'whatsapp_inbox.read',
+  WHATSAPP_INBOX_REPLY: 'whatsapp_inbox.reply',
 });
 
 export const ROLE_CODES = Object.freeze(['superadmin', 'admin', 'staff']);

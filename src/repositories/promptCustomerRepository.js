@@ -1,12 +1,13 @@
-// Read-only bill queries over a branch's ProntoZ data: one row per bill, newest first.
+// Read-only bill queries over a branch's Prompt data: one row per bill, newest first.
 // The data comes either from the export database (CustomerBills, one row per bill line) or,
 // for branches with an RxBridge desktop agent, from the bills it sends (agent_bills).
 //
 // Each source exposes the same derived table `b` with columns:
-//   BillKey, SortKey, Phone, Patient, Address, Doctor, BillNo, BillDate (YYYY-MM-DD), Total, Items, Remarks
+//   BillKey, SortKey, Phone, Patient, Address, Doctor, BillNo, BillDate (YYYY-MM-DD), Total, Items, Remarks,
+//   ReminderId (the reminder created from the bill's remark; RxBridge bills only)
 // plus `medicineFilter` (EXISTS on the bill's lines), `lines(rows)` and `medicines()`.
 
-/** Source over the ProntoZ export database's CustomerBills table (one row per bill line). */
+/** Source over the Prompt export database's CustomerBills table (one row per bill line). */
 export const exportSource = (conn) => ({
   conn,
   bills: (alias) =>
@@ -15,7 +16,7 @@ export const exportSource = (conn) => ({
       `(SELECT CONCAT(COALESCE(BillNo, ''), '|', COALESCE(DATE_FORMAT(BillDate, '%Y-%m-%d'), '')) AS BillKey,
                BillNo AS SortKey, MAX(Phone) AS Phone, MAX(Patient) AS Patient, MAX(Address) AS Address,
                MAX(Doctor) AS Doctor, BillNo, DATE_FORMAT(BillDate, '%Y-%m-%d') AS BillDate,
-               MAX(BillTotal) AS Total, COUNT(*) AS Items, NULL AS Remarks
+               MAX(BillTotal) AS Total, COUNT(*) AS Items, NULL AS Remarks, NULL AS ReminderId
         FROM CustomerBills
         GROUP BY BillNo, BillDate) AS ??`,
       [alias],
@@ -49,7 +50,8 @@ export const agentBillsSource = (conn, branchId) => ({
       `(SELECT CAST(ab.id AS CHAR) AS BillKey, ab.id AS SortKey, ${AGENT_PHONE} AS Phone,
                ab.patient_name AS Patient, ab.address AS Address, ab.doctor AS Doctor, ab.bill_no AS BillNo,
                DATE_FORMAT(ab.bill_date, '%Y-%m-%d') AS BillDate, ab.total AS Total, ab.item_count AS Items,
-               ab.remarks AS Remarks
+               ab.remarks AS Remarks,
+               (SELECT rc.id FROM reminder_cycles rc WHERE rc.agent_bill_id = ab.id) AS ReminderId
         FROM agent_bills ab
         WHERE ab.branch_id = ?) AS ??`,
       [branchId, alias],
@@ -113,7 +115,7 @@ export async function list(src, { search, mobileStatus, medicine, limit, offset 
   if (mobileStatus !== 'all') MOBILE_FILTERS[mobileStatus](query);
   const [{ total }] = await query.clone().count({ total: '*' });
   const rows = await query
-    .select('b.BillKey', 'b.SortKey', 'b.Phone', 'b.Patient', 'b.Address', 'b.Doctor', 'b.BillNo', 'b.BillDate', 'b.Total', 'b.Items', 'b.Remarks')
+    .select('b.BillKey', 'b.SortKey', 'b.Phone', 'b.Patient', 'b.Address', 'b.Doctor', 'b.BillNo', 'b.BillDate', 'b.Total', 'b.Items', 'b.Remarks', 'b.ReminderId')
     .orderBy('b.BillDate', 'desc')
     .orderBy('b.SortKey', 'desc')
     .limit(limit)

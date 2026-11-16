@@ -125,13 +125,13 @@ export async function createCustomer(auth, input) {
 }
 
 /**
- * Adds a customer from a branch's ProntoZ export, together with the chosen medicines for
+ * Adds a customer from a branch's Prompt export, together with the chosen medicines for
  * that branch. A customer of another branch (same mobile) is linked to this branch and
  * gets the medicines; their details are not overwritten. Someone who is already a
  * customer at this branch is rejected — medicines are not added to existing customers.
  * @returns {{ customer, existed: boolean, medicinesAdded: string[] }}
  */
-export async function addFromProntoz(auth, { branchId, medicines, lastBillDate, ...fields }) {
+export async function addFromPrompt(auth, { branchId, medicines, lastBillDate, ...fields }) {
   if (lastBillDate > todayIn(env.APP_TIMEZONE)) {
     throw badRequest('The last bill date cannot be in the future.', [{ path: 'lastBillDate', message: 'Cannot be in the future.' }]);
   }
@@ -151,7 +151,7 @@ export async function addFromProntoz(auth, { branchId, medicines, lastBillDate, 
         branchId,
         medicines,
         lastBillDate,
-        source: 'prontoz',
+        source: 'prompt',
         userId: auth.user.id,
       });
       if (added.length) {
@@ -162,7 +162,7 @@ export async function addFromProntoz(auth, { branchId, medicines, lastBillDate, 
             entityType: 'customer',
             entityId: id,
             branchId,
-            details: { medicines: added, lastBillDate, source: 'prontoz' },
+            details: { medicines: added, lastBillDate, source: 'prompt' },
           },
           trx,
         );

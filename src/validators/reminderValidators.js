@@ -44,14 +44,30 @@ export const cancelReminderSchema = z.object({
   reason: z.string().trim().max(255).optional().transform((v) => v || undefined),
 });
 
+// What the customer ordered: one line per medicine.
+const orderItemsField = z
+  .array(
+    z.object({
+      medicine: z.string({ error: 'Enter the medicine name.' }).trim().min(1, 'Enter the medicine name.').max(200),
+      quantity: z
+        .number({ error: 'Enter the quantity.' })
+        .positive('Must be more than 0.')
+        .max(99999, 'Too large.')
+        .refine((q) => Math.abs(q * 100 - Math.round(q * 100)) < 1e-6, 'Use at most 2 decimals.'),
+    }),
+  )
+  .min(1, 'Add at least one medicine.')
+  .max(50);
+
 const deliveryDetailsSchema = z.discriminatedUnion('method', [
   z.object({
     method: z.literal('delivery'),
+    items: orderItemsField,
     address: z.string({ error: 'Enter the delivery address.' }).trim().min(1, 'Enter the delivery address.').max(500),
     // Also store this address on the customer.
     saveAddress: z.boolean().default(false),
   }),
-  z.object({ method: z.literal('pickup') }),
+  z.object({ method: z.literal('pickup'), items: orderItemsField }),
 ]);
 
 export const recordOutcomeSchema = z.discriminatedUnion('outcome', [

@@ -64,9 +64,9 @@ export const medicineNameField = z.string().trim().min(1, 'Medicine name is requ
 
 export const isoDateField = z.iso.date('Use the YYYY-MM-DD format.');
 
-export const addFromProntozSchema = z.object({
+export const addFromPromptSchema = z.object({
   branchId: z.number().int().positive(),
-  // Date of the ProntoZ bill the medicines come from; reminders count from it.
+  // Date of the Prompt bill the medicines come from; reminders count from it.
   lastBillDate: isoDateField,
   fullName: customerFields.fullName,
   mobile: customerFields.mobile,

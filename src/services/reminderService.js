@@ -195,13 +195,14 @@ async function cancelOrderDelivery(trx, auth, cycle) {
 }
 
 /** Creates the delivery for an order; optionally saves the address on the customer. */
-async function createOrderDelivery(trx, auth, cycle, { method, address, saveAddress }) {
+async function createOrderDelivery(trx, auth, cycle, { method, address, saveAddress, items }) {
   await deliveryRepository.create(trx, {
     reminderCycleId: cycle.id,
     customerId: cycle.customer_id,
     branchId: cycle.branch_id,
     method,
     address,
+    items,
     userId: auth.user.id,
   });
   await auditRepository.record(
@@ -211,7 +212,12 @@ async function createOrderDelivery(trx, auth, cycle, { method, address, saveAddr
       entityType: 'customer',
       entityId: cycle.customer_id,
       branchId: cycle.branch_id,
-      details: { medicine: cycle.medicine, method, ...(method === 'delivery' && { address }) },
+      details: {
+        medicine: cycle.medicine,
+        items: items.map((i) => `${i.medicine} × ${i.quantity}`),
+        method,
+        ...(method === 'delivery' && { address }),
+      },
     },
     trx,
   );

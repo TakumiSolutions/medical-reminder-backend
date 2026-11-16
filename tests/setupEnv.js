@@ -6,4 +6,6 @@ Object.assign(process.env, {
   DB_NAME: 'test',
   CORS_ORIGINS: 'http://localhost:5173',
   SESSION_COOKIE_SECURE: 'false',
+  WHATSAPP_APP_SECRET: 'test-app-secret',
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: 'verify-token-123',
 });

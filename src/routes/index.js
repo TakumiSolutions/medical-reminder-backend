@@ -8,8 +8,9 @@ import { auditLogRoutes } from './auditLogRoutes.js';
 import { authRoutes } from './authRoutes.js';
 import { customerRoutes } from './customerRoutes.js';
 import { dashboardRoutes } from './dashboardRoutes.js';
+import { inboxRoutes } from './inboxRoutes.js';
 import { deliveryRoutes } from './deliveryRoutes.js';
-import { prontozRoutes } from './prontozRoutes.js';
+import { promptRoutes } from './promptRoutes.js';
 import { reminderRoutes } from './reminderRoutes.js';
 import { userRoutes } from './userRoutes.js';
 
@@ -28,11 +29,12 @@ apiRoutes.use('/auth', authRoutes);
 apiRoutes.use('/users', userRoutes);
 apiRoutes.use('/audit-logs', auditLogRoutes);
 apiRoutes.use('/customers', customerRoutes);
-apiRoutes.use('/prontoz', prontozRoutes);
+apiRoutes.use('/prompt', promptRoutes);
 apiRoutes.use('/reminders', reminderRoutes);
 apiRoutes.use('/deliveries', deliveryRoutes);
 apiRoutes.use('/dashboard', dashboardRoutes);
 apiRoutes.use('/agents', agentRoutes);
+apiRoutes.use('/inbox', inboxRoutes);
 
 // Only the branches the caller has access to.
 apiRoutes.get('/branches', authenticate, requirePermission(PERMISSIONS.BRANCHES_READ), async (req, res) => {

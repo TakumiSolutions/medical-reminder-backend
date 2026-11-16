@@ -7,6 +7,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { requireAllowedOrigin } from './middleware/originCheck.js';
 import { agentApiRoutes } from './routes/agentApiRoutes.js';
 import { apiRoutes } from './routes/index.js';
+import { whatsappWebhookRoutes } from './routes/whatsappWebhookRoutes.js';
 
 export function createApp() {
   const app = express();
@@ -20,6 +21,8 @@ export function createApp() {
   // Desktop agents: bearer tokens, no cookies or Origin, larger (gzip) bodies. Mounted
   // before the browser API's CORS, body parser, cookie parser and origin (CSRF) check.
   app.use('/api/v1', agentApiRoutes);
+  // Meta's WhatsApp webhook: signed with the App Secret, no cookies or Origin.
+  app.use('/webhooks/whatsapp', whatsappWebhookRoutes);
 
   app.use(cors({ origin: env.CORS_ORIGINS, credentials: true }));
   app.use(express.json({ limit: '100kb' }));

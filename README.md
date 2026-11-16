@@ -79,12 +79,12 @@ src/
 - Creating a customer whose mobile already exists links the existing customer to the selected branch instead; their details are not overwritten.
 - Customers are never deleted. Two records are never merged automatically; changing a mobile number to one already in use is rejected.
 
-## ProntoZ data (read-only)
+## Prompt data (read-only)
 
-Each branch has its own ProntoZ export database (tables `CustomerList` and `CustomerBills`). The **ProntoZ customers** page shows a branch's customers with the medicines on their **last bill**; users only see branches they belong to (Superadmin sees all).
+Each branch has its own Prompt export database (tables `CustomerList` and `CustomerBills`). The **Prompt Customer** page shows a branch's customers with the medicines on their **last bill**; users only see branches they belong to (Superadmin sees all).
 
-- `PRONTOZ_DB_*` in `.env` must use a database user with **SELECT only** on those databases.
-- `PRONTOZ_DATABASES` maps branch codes to databases, e.g. `central:PharmacyExport,speedwell:PharmacyExportSpeedwell`.
+- `PROMPT_DB_*` in `.env` must use a database user with **SELECT only** on those databases.
+- `PROMPT_DATABASES` maps branch codes to databases, e.g. `central:PharmacyExport,speedwell:PharmacyExportSpeedwell`.
 - Filter by a medicine to list customers whose last bill contained it.
 - **Add** (needs the Customers page with manage rights) copies the customer and the chosen medicines into Customers for that branch. A customer of another branch (same mobile) is linked to this branch with these medicines; their details are not overwritten. Someone already a customer at this branch shows "In customers" and cannot be added again — medicines are not added to existing customers.
 
@@ -94,12 +94,15 @@ Customer medicines are stored per branch (`customer_medicines`). The Customers p
 
 Set from the Customers page (**Set reminder**), per medicine:
 
-- Staff choose N days (quick picks 27 / 57 / 87, or any 1–365). Reminders fall on **day N, N+1 and N+2 after the medicine's last bill date**.
-- The last bill date is stored when a medicine is added from ProntoZ; if none is stored, the dialog asks for it (never a future date).
+- Staff choose N days (quick picks 30 / 60 / 90, or any 1–365). Reminders fall on **day N-2, N-1 and N after the medicine's last bill date** (30 → days 28, 29, 30), never before day 1.
+- **Automatic reminders from bill remarks:** when an RxBridge bill's remark is a number of days (`30`, `15 days`, `10 DAY`), one reminder for the whole bill is scheduled on day N-2, N-1 and N after the bill date, listing all its medicines. The customer is created (or linked to the branch) by mobile number and the medicines are recorded. This runs when the bill arrives, plus a catch-up at start-up and every 15 minutes. Bills without a valid mobile, without medicines, or whose dates have all passed are skipped; each bill gets at most one reminder, so changing the remark later does not reschedule it. These bills are highlighted green on the **Prompt Customer** page.
+- **WhatsApp sending (Meta WhatsApp Cloud API):** from `WHATSAPP_SEND_TIME` (default 10:00, `APP_TIMEZONE`) each day's scheduled reminders are sent from the branch's own number, checked every 5 minutes. Configure per branch code: `WHATSAPP_CENTRAL_PHONE_NUMBER_ID` + `WHATSAPP_CENTRAL_ACCESS_TOKEN`, `WHATSAPP_SPEEDWELL_PHONE_NUMBER_ID` + `WHATSAPP_SPEEDWELL_ACCESS_TOKEN` (optional `_TEMPLATE_NAME` / `_TEMPLATE_LANGUAGE` per branch). A branch without both values sends nothing. Messages use the approved template `WHATSAPP_TEMPLATE_NAME` (default `medicine_reminder`, language `WHATSAPP_TEMPLATE_LANGUAGE`); `WHATSAPP_TEMPLATE_PARAMS` lists what fills its `{{1}}`, `{{2}}`, … (`customer`, `medicine`, `branch`, `billdate`; default `customer,medicine`). Rate limits and server errors are retried (up to 5 attempts that day); other errors mark the reminder **failed** with the reason. Each reminder is claimed before sending, so several servers on the same database never send it twice; a send interrupted mid-way is marked failed, not resent. Dates that passed without being sent stay as they are (never sent late).
+- **WhatsApp inbox** (page *WhatsApp inbox*, permissions `whatsapp_inbox.read` / `whatsapp_inbox.reply`): customer replies arrive on the Meta webhook `POST /webhooks/whatsapp` (verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` on `GET`, every delivery signed with `WHATSAPP_APP_SECRET`; both must be set or the webhook is off). Messages are stored per branch by the number they came in on (`WHATSAPP_<CODE>_PHONE_NUMBER_ID`), together with the reminders sent and their delivered/read ticks; a reminder WhatsApp later reports as undeliverable is marked failed. Users see only conversations of their own branches (Superadmin sees all, with a tab per branch). Staff can reply with text within 24 hours of the customer's last message (a WhatsApp rule). Photos, voice notes and documents are shown as a placeholder with their caption.
+- The last bill date is stored when a medicine is added from Prompt; if none is stored, the dialog asks for it (never a future date).
 - One cycle per scheduling; it does not repeat. A medicine can have only one open reminder at a time.
 - Dates already in the past when scheduling are recorded as *skipped* (never sent late). If all three have passed, scheduling is refused.
 - **Stop** cancels the remaining dates (with an optional reason).
-- When the customer responds, staff mark the reminder **Ordered** (nothing else is entered; the bill is made in ProntoZ and the store delivers) or **Refused** (reason required). Either cancels the remaining dates and moves the customer to the **Ordered** or **Refused** page.
+- When the customer responds, staff mark the reminder **Ordered** (nothing else is entered; the bill is made in Prompt and the store delivers) or **Refused** (reason required). Either cancels the remaining dates and moves the customer to the **Ordered** or **Refused** page.
 - Outcomes can be undone: switch Ordered ↔ Refused, or **Move back to reminders**, which restores the cancelled dates (dates already passed become *skipped*). Every change is in the audit log.
 - Stopped reminders cannot get an outcome, and reminders with an outcome cannot be stopped.
 - "Today" uses `APP_TIMEZONE` (default `Asia/Kolkata`).
@@ -223,10 +226,10 @@ Status codes:
 | GET | `/api/customers/:id` | `customers.read` |
 | POST | `/api/customers` | `customers.manage` (200 + `existed: true` when the mobile matched) |
 | PATCH | `/api/customers/:id` | `customers.manage` |
-| GET | `/api/prontoz/sources` | `prontoz_customers.read` (branches with ProntoZ data the caller can see) |
-| GET | `/api/prontoz/customers` | `prontoz_customers.read` (`branchId`, `search`, `medicine`, `mobileStatus=all\|valid\|invalid\|missing`, paging) |
-| GET | `/api/prontoz/medicines` | `prontoz_customers.read` (`branchId`) |
-| POST | `/api/prontoz/customers/add` | `prontoz_customers.read` + `customers.manage` |
+| GET | `/api/prompt/sources` | `prompt_customers.read` (branches with Prompt data the caller can see) |
+| GET | `/api/prompt/customers` | `prompt_customers.read` (`branchId`, `search`, `medicine`, `mobileStatus=all\|valid\|invalid\|missing`, paging) |
+| GET | `/api/prompt/medicines` | `prompt_customers.read` (`branchId`) |
+| POST | `/api/prompt/customers/add` | `prompt_customers.read` + `customers.manage` |
 | GET | `/api/customers/medicines` | `customers.read` |
 | GET | `/api/reminders` | `reminders.read` (`view=active\|due\|finished\|cancelled\|ordered\|refused`, `search`, paging) |
 | GET | `/api/reminders/options` | `reminders.manage` + `customers.read` (`customerId`) |

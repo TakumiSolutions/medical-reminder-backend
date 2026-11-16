@@ -1,5 +1,6 @@
 import { db } from '../db/knex.js';
 import { toIsoDate } from '../utils/dates.js';
+import { loadItems as loadDeliveryItems } from './deliveryRepository.js';
 
 const LAST_DATE = '(SELECT MAX(r.scheduled_date) FROM reminders r WHERE r.cycle_id = reminder_cycles.id)';
 
@@ -25,7 +26,7 @@ const VIEWS = {
 const OUTCOME_VIEWS = new Set(['ordered', 'refused']);
 export const REMINDER_VIEWS = Object.keys(VIEWS);
 
-function toCycle(row, remindersByCycle, today, deliveriesByCycle = new Map()) {
+function toCycle(row, remindersByCycle, today, deliveriesByCycle = new Map(), billItems = new Map()) {
   const reminders = remindersByCycle.get(String(row.id)) ?? [];
   const lastDate = reminders.at(-1)?.scheduledDate ?? null;
   return {
@@ -43,6 +44,10 @@ function toCycle(row, remindersByCycle, today, deliveriesByCycle = new Map()) {
       ? { type: row.outcome, reason: row.outcome_reason, at: row.outcome_at, by: row.outcome_by_name ? { fullName: row.outcome_by_name } : null }
       : null,
     cancelReason: row.cancel_reason,
+    // Set when the reminder was created automatically from a bill's remark.
+    bill: row.agent_bill_id ? { id: String(row.agent_bill_id), billNo: row.bill_no, remarks: row.bill_remarks } : null,
+    // Suggested lines for the order: the bill's medicines and quantities, or the medicine alone.
+    orderItems: (row.agent_bill_id && billItems.get(String(row.agent_bill_id))) || [{ medicine: row.medicine, quantity: null }],
     createdAt: row.created_at,
     createdBy: row.created_by_name ? { fullName: row.created_by_name } : null,
     cancelledAt: row.cancelled_at,
@@ -50,6 +55,24 @@ function toCycle(row, remindersByCycle, today, deliveriesByCycle = new Map()) {
     // Current (not cancelled) delivery of an order, if any.
     delivery: deliveriesByCycle.get(String(row.id)) ?? null,
   };
+}
+
+/** Medicines and quantities on each bill (a repeated product added up), keyed by bill id. */
+async function loadBillItems(billIds, conn = db) {
+  const map = new Map();
+  if (billIds.length === 0) return map;
+  const rows = await conn('agent_bill_items')
+    .whereIn('agent_bill_id', billIds)
+    .whereNotNull('product')
+    .groupBy('agent_bill_id', 'product')
+    .select('agent_bill_id', 'product', conn.raw('SUM(qty) AS qty'), conn.raw('MIN(line_no) AS first_line'))
+    .orderBy(['agent_bill_id', 'first_line']);
+  for (const row of rows) {
+    const key = String(row.agent_bill_id);
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push({ medicine: row.product.trim(), quantity: row.qty == null ? null : Number(row.qty) });
+  }
+  return map;
 }
 
 async function loadDeliveries(cycleIds, conn = db) {
@@ -60,8 +83,10 @@ async function loadDeliveries(cycleIds, conn = db) {
     .whereIn('deliveries.reminder_cycle_id', cycleIds)
     .whereNot('deliveries.status', 'cancelled')
     .select('deliveries.id', 'deliveries.reminder_cycle_id', 'deliveries.method', 'deliveries.status', 'assignee.full_name as assigned_name');
+  const items = await loadDeliveryItems(rows.map((r) => r.id), conn);
   for (const row of rows) {
     map.set(String(row.reminder_cycle_id), {
+      items: items.get(String(row.id)) ?? [],
       id: String(row.id),
       method: row.method,
       status: row.status,
@@ -71,7 +96,7 @@ async function loadDeliveries(cycleIds, conn = db) {
   return map;
 }
 
-async function loadReminders(cycleIds, conn = db) {
+export async function loadReminders(cycleIds, conn = db) {
   const map = new Map();
   if (cycleIds.length === 0) return map;
   const rows = await conn('reminders').whereIn('cycle_id', cycleIds).orderBy('day_number');
@@ -83,6 +108,8 @@ async function loadReminders(cycleIds, conn = db) {
       scheduledDate: toIsoDate(row.scheduled_date),
       status: row.status,
       cancelSource: row.cancel_source,
+      sentAt: row.sent_at ?? null,
+      failureReason: row.failure_reason ?? null,
     });
   }
   return map;
@@ -92,6 +119,7 @@ function baseQuery(conn = db) {
   return conn('reminder_cycles')
     .join('customers', 'customers.id', 'reminder_cycles.customer_id')
     .join('branches', 'branches.id', 'reminder_cycles.branch_id')
+    .leftJoin('agent_bills', 'agent_bills.id', 'reminder_cycles.agent_bill_id')
     .leftJoin('users as creator', 'creator.id', 'reminder_cycles.created_by')
     .leftJoin('users as outcome_user', 'outcome_user.id', 'reminder_cycles.outcome_by');
 }
@@ -102,6 +130,8 @@ const CYCLE_COLUMNS = [
   'customers.mobile',
   'customers.address',
   'branches.name as branch_name',
+  'agent_bills.bill_no',
+  'agent_bills.remarks as bill_remarks',
   'creator.full_name as created_by_name',
   'outcome_user.full_name as outcome_by_name',
 ];
@@ -133,8 +163,9 @@ export async function list({ view, today, search, scopeBranchIds, branchId, limi
     .limit(limit)
     .offset(offset);
   const ids = rows.map((r) => r.id);
-  const [reminders, deliveries] = await Promise.all([loadReminders(ids), loadDeliveries(ids)]);
-  return { items: rows.map((r) => toCycle(r, reminders, today, deliveries)), total: Number(total) };
+  const billIds = rows.filter((r) => r.agent_bill_id).map((r) => r.agent_bill_id);
+  const [reminders, deliveries, billItems] = await Promise.all([loadReminders(ids), loadDeliveries(ids), loadBillItems(billIds)]);
+  return { items: rows.map((r) => toCycle(r, reminders, today, deliveries, billItems)), total: Number(total) };
 }
 
 /** Counts per view, for the tab badges. */
@@ -154,8 +185,12 @@ export async function countByView({ today, scopeBranchIds }) {
 export async function findById(id, today, conn = db) {
   const row = await baseQuery(conn).where('reminder_cycles.id', id).first(CYCLE_COLUMNS);
   if (!row) return null;
-  const [reminders, deliveries] = await Promise.all([loadReminders([row.id], conn), loadDeliveries([row.id], conn)]);
-  return toCycle(row, reminders, today, deliveries);
+  const [reminders, deliveries, billItems] = await Promise.all([
+    loadReminders([row.id], conn),
+    loadDeliveries([row.id], conn),
+    loadBillItems(row.agent_bill_id ? [row.agent_bill_id] : [], conn),
+  ]);
+  return toCycle(row, reminders, today, deliveries, billItems);
 }
 
 /** Active (not cancelled, not finished) cycles for a customer, keyed "branchId|medicine". */
@@ -169,10 +204,12 @@ export async function findOpenCycles(conn, customerId, today) {
   return new Map(rows.map((r) => [`${r.branch_id}|${r.medicine}`, { id: String(r.id), reminders: reminders.get(String(r.id)) ?? [] }]));
 }
 
-export async function createCycle(conn, { customerId, branchId, medicine, startDate, intervalDays, userId, days }) {
+/** `agentBillId` is set for a reminder created from a bill's remark; `userId` is null then. */
+export async function createCycle(conn, { customerId, branchId, agentBillId = null, medicine, startDate, intervalDays, userId, days }) {
   const [id] = await conn('reminder_cycles').insert({
     customer_id: customerId,
     branch_id: branchId,
+    agent_bill_id: agentBillId,
     medicine,
     start_date: startDate,
     interval_days: intervalDays,
@@ -234,4 +271,86 @@ export async function clearOutcome(conn, id, today) {
     .clone()
     .where('scheduled_date', '<', today)
     .update({ status: 'skipped', cancel_source: null, status_changed_at: conn.fn.now() });
+}
+
+// --- WhatsApp sending ---
+
+/**
+ * Reminders due on `today` that have not been sent, for active cycles at the given branches,
+ * in id order after `afterId` (for paging through one run).
+ */
+export async function findDueForSending({ today, branchIds, afterId = 0, limit }) {
+  if (branchIds.length === 0) return [];
+  const rows = await db('reminders as r')
+    .join('reminder_cycles as c', 'c.id', 'r.cycle_id')
+    .join('customers as cu', 'cu.id', 'c.customer_id')
+    .join('branches as b', 'b.id', 'c.branch_id')
+    .where({ 'r.status': 'scheduled', 'r.scheduled_date': today, 'c.status': 'active' })
+    .whereNull('c.outcome')
+    .whereNull('r.send_claimed_at')
+    .whereIn('c.branch_id', branchIds)
+    .where('r.id', '>', afterId)
+    .orderBy('r.id')
+    .limit(limit)
+    .select('r.id', 'r.attempts', 'c.branch_id', 'c.customer_id', 'c.medicine', 'c.start_date', 'cu.full_name', 'cu.mobile', 'b.name as branch_name');
+  return rows.map((row) => ({
+    id: String(row.id),
+    attempts: row.attempts,
+    branchId: row.branch_id,
+    branchName: row.branch_name,
+    medicine: row.medicine,
+    billDate: toIsoDate(row.start_date),
+    customerId: String(row.customer_id),
+    customerName: row.full_name,
+    mobile: row.mobile,
+  }));
+}
+
+/** Claims a reminder for sending; false when another server claimed it or it is no longer scheduled. */
+export async function claimForSending(id) {
+  const updated = await db('reminders')
+    .where({ id, status: 'scheduled' })
+    .whereNull('send_claimed_at')
+    .update({ send_claimed_at: db.fn.now() });
+  return updated === 1;
+}
+
+export async function markSent(id, messageId) {
+  await db('reminders').where({ id }).update({
+    status: 'sent',
+    sent_at: db.fn.now(),
+    status_changed_at: db.fn.now(),
+    whatsapp_message_id: messageId,
+    failure_reason: null,
+    attempts: db.raw('attempts + 1'),
+    send_claimed_at: null,
+  });
+}
+
+/** Records a failed attempt: `final` marks the reminder failed, otherwise it is tried again later. */
+export async function markSendFailed(id, { reason, final }) {
+  await db('reminders')
+    .where({ id })
+    .update({
+      ...(final && { status: 'failed', status_changed_at: db.fn.now() }),
+      failure_reason: reason.slice(0, 500),
+      attempts: db.raw('attempts + 1'),
+      send_claimed_at: null,
+    });
+}
+
+/**
+ * A claim left by a server that stopped mid-send. The message may have gone out, so it is
+ * marked failed rather than sent again.
+ */
+export async function failStaleClaims(staleMinutes) {
+  return db('reminders')
+    .where('status', 'scheduled')
+    .where('send_claimed_at', '<', db.raw('NOW() - INTERVAL ? MINUTE', [staleMinutes]))
+    .update({
+      status: 'failed',
+      status_changed_at: db.fn.now(),
+      failure_reason: 'Sending was interrupted. Check WhatsApp before contacting the customer again.',
+      send_claimed_at: null,
+    });
 }

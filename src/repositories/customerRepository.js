@@ -215,3 +215,13 @@ export async function addMedicines(conn, { customerId, branchId, medicines, last
   }
   return added;
 }
+
+/** Moves the last bill date of recorded medicines forward to `lastBillDate` (never back). */
+export async function refreshLastBillDate(conn, { customerId, branchId, medicines, lastBillDate }) {
+  if (medicines.length === 0) return;
+  await conn('customer_medicines')
+    .where({ customer_id: customerId, branch_id: branchId })
+    .whereIn('medicine', medicines)
+    .where((q) => q.whereNull('last_bill_date').orWhere('last_bill_date', '<', lastBillDate))
+    .update({ last_bill_date: lastBillDate });
+}
