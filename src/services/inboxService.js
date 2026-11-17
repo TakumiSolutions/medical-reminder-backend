@@ -138,6 +138,23 @@ export async function recordReminderSent({ branchId, mobile, customerId, reminde
   });
 }
 
+/** Records a bill sent as a PDF (automatically or by `sentBy`) in the branch's inbox. */
+export async function recordBillSent({ branchId, mobile, customerId, waMessageId, sentBy = null, body }) {
+  await db.transaction(async (trx) => {
+    const conversationId = await inboxRepository.upsertConversation(trx, { branchId, waId: mobile.replace(/^\+/, ''), customerId });
+    await inboxRepository.insertMessage(trx, {
+      conversationId,
+      direction: 'out',
+      waMessageId,
+      type: 'document',
+      body,
+      status: 'sent',
+      sentBy,
+      at: new Date(),
+    });
+  });
+}
+
 // --- Inbox pages ---
 
 async function loadConversation(auth, id) {

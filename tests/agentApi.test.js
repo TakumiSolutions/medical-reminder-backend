@@ -229,6 +229,39 @@ describe('bill row mapping', () => {
     assert.equal(row.items[0].gst_pct, 12);
     assert.equal(row.items[0].expiry, '03/27');
   });
+
+  it('stores who made and last edited the bill, with shop times', () => {
+    const bill = {
+      ...SAMPLE.bills[0],
+      createdBy: { code: '3', name: ' RAMESH ' },
+      createdAt: '2026-11-17T10:32:05',
+      modifiedBy: { code: 7, name: 'SURESH' },
+      modifiedAt: '2026-11-17 18:04',
+    };
+    const row = toBillRow(ingestBillsSchema.parse({ ...SAMPLE, bills: [bill] }).bills[0]);
+    assert.equal(row.created_by_code, 3);
+    assert.equal(row.created_by_name, 'RAMESH');
+    assert.equal(row.bill_created_at, '2026-11-17 10:32:05');
+    assert.equal(row.modified_by_code, 7);
+    assert.equal(row.modified_by_name, 'SURESH');
+    assert.equal(row.bill_modified_at, '2026-11-17 18:04:00');
+  });
+
+  it('stores missing or unusable creator fields as null without rejecting the bill', () => {
+    const bad = { ...SAMPLE.bills[0], createdBy: { code: 'x', name: '' }, createdAt: '17/11/2026', modifiedBy: null, modifiedAt: '2026-02-30T10:00:00' };
+    const row = toBillRow(ingestBillsSchema.parse({ ...SAMPLE, bills: [bad] }).bills[0]);
+    assert.deepEqual(
+      [row.created_by_code, row.created_by_name, row.bill_created_at, row.modified_by_code, row.modified_by_name, row.bill_modified_at],
+      [null, null, null, null, null, null],
+    );
+    const old = toBillRow(ingestBillsSchema.parse(SAMPLE).bills[0]);
+    assert.equal(old.created_by_name, null);
+  });
+
+  it('keeps the request hash of agents that do not send creator fields', () => {
+    const parsed = ingestBillsSchema.parse(SAMPLE).bills[0];
+    for (const key of ['createdBy', 'createdAt', 'modifiedBy', 'modifiedAt']) assert.equal(key in parsed, false, key);
+  });
 });
 
 describe('heartbeat validation', () => {

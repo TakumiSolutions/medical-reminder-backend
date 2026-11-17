@@ -20,8 +20,14 @@ export function cleanParam(value) {
   return text.length > PARAM_MAX ? `${text.slice(0, PARAM_MAX - 1)}…` : text;
 }
 
-/** Request body for a template message to `mobile` (+91XXXXXXXXXX) with body parameters in order. */
-export function templateMessage({ mobile, templateName, language, params }) {
+/**
+ * Request body for a template message to `mobile` (+91XXXXXXXXXX) with body parameters in
+ * order and, optionally, a document header ({ id, filename } of uploaded media).
+ */
+export function templateMessage({ mobile, templateName, language, params, document }) {
+  const components = [];
+  if (document) components.push({ type: 'header', parameters: [{ type: 'document', document }] });
+  if (params.length) components.push({ type: 'body', parameters: params.map((p) => ({ type: 'text', text: cleanParam(p) })) });
   return {
     messaging_product: 'whatsapp',
     to: mobile.replace(/^\+/, ''),
@@ -29,9 +35,7 @@ export function templateMessage({ mobile, templateName, language, params }) {
     template: {
       name: templateName,
       language: { code: language },
-      ...(params.length && {
-        components: [{ type: 'body', parameters: params.map((p) => ({ type: 'text', text: cleanParam(p) })) }],
-      }),
+      ...(components.length && { components }),
     },
   };
 }
@@ -45,14 +49,16 @@ export function toWhatsAppError(status, body) {
   return new WhatsAppError(`WhatsApp ${status}${error.code ? ` (code ${error.code})` : ''}: ${message}`, { retryable });
 }
 
-async function post(config, body) {
-  const url = `https://graph.facebook.com/${env.WHATSAPP_API_VERSION}/${encodeURIComponent(config.phoneNumberId)}/messages`;
+/** POSTs to the branch number's `edge` (messages, media); returns the JSON answer. */
+async function request(config, edge, body) {
+  const url = `https://graph.facebook.com/${env.WHATSAPP_API_VERSION}/${encodeURIComponent(config.phoneNumberId)}/${edge}`;
+  const json = !(body instanceof FormData);
   let response;
   try {
     response = await fetch(url, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: { Authorization: `Bearer ${config.accessToken}`, ...(json && { 'Content-Type': 'application/json' }) },
+      body: json ? JSON.stringify(body) : body,
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch (error) {
@@ -60,6 +66,11 @@ async function post(config, body) {
   }
   const payload = await response.json().catch(() => null);
   if (!response.ok) throw toWhatsAppError(response.status, payload);
+  return payload;
+}
+
+async function post(config, body) {
+  const payload = await request(config, 'messages', body);
   const id = payload?.messages?.[0]?.id;
   if (!id) throw new WhatsAppError('WhatsApp accepted the request but returned no message id.', { retryable: false });
   return id;
@@ -76,4 +87,29 @@ export function sendText(config, { mobile, text }) {
  */
 export function sendTemplate(config, { mobile, params }) {
   return post(config, templateMessage({ mobile, templateName: config.templateName, language: config.language, params }));
+}
+
+/**
+ * Uploads a PDF to WhatsApp (kept by Meta for 30 days).
+ * @returns {Promise<string>} the media id
+ */
+export async function uploadPdf(config, { buffer, filename }) {
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', 'application/pdf');
+  form.append('file', new Blob([buffer], { type: 'application/pdf' }), filename);
+  const payload = await request(config, 'media', form);
+  if (!payload?.id) throw new WhatsAppError('WhatsApp accepted the upload but returned no media id.', { retryable: false });
+  return payload.id;
+}
+
+/**
+ * Sends the branch's bill template with the PDF (uploaded media) as its document header.
+ * @returns {Promise<string>} the WhatsApp message id
+ */
+export function sendBillTemplate(config, { mobile, mediaId, filename, params }) {
+  return post(
+    config,
+    templateMessage({ mobile, templateName: config.billTemplateName, language: config.language, params, document: { id: mediaId, filename } }),
+  );
 }

@@ -21,5 +21,6 @@ customerRoutes.use(authenticate);
 customerRoutes.get('/', canRead, validate({ query: listCustomersQuerySchema }), customerController.list);
 customerRoutes.get('/medicines', canRead, customerController.medicines);
 customerRoutes.get('/:id', canRead, byId, customerController.get);
+customerRoutes.get('/:id/bills', canRead, byId, customerController.bills);
 customerRoutes.post('/', canManage, validate({ body: createCustomerSchema }), customerController.create);
 customerRoutes.patch('/:id', canManage, byId, validate({ body: updateCustomerSchema }), customerController.update);

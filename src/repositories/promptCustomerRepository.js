@@ -4,11 +4,19 @@
 //
 // Each source exposes the same derived table `b` with columns:
 //   BillKey, SortKey, Phone, Patient, Address, Doctor, BillNo, BillDate (YYYY-MM-DD), Total, Items, Remarks,
-//   ReminderId (the reminder created from the bill's remark; RxBridge bills only)
+//   ReminderId (the reminder created from the bill's remark; RxBridge bills only),
+//   CreatedBy, CreatedAt, ModifiedBy, ModifiedAt (Prompt Rx user names and shop times as
+//   YYYY-MM-DDTHH:mm:ss; RxBridge bills only),
+//   AgentBillId, WhatsappStatus, WhatsappSentAt (the bill's latest WhatsApp send; RxBridge only)
 // plus `medicineFilter` (EXISTS on the bill's lines), `lines(rows)` and `medicines()`.
 
+// Each source takes an optional `mobile` (+91XXXXXXXXXX): only that customer's bills.
+
+/** Bare 10-digit mobile as the export and the Prompt bills hold it. */
+const bareMobile = (mobile) => (mobile.startsWith('+91') ? mobile.slice(3) : mobile);
+
 /** Source over the Prompt export database's CustomerBills table (one row per bill line). */
-export const exportSource = (conn) => ({
+export const exportSource = (conn, { mobile } = {}) => ({
   conn,
   bills: (alias) =>
     conn.raw(
@@ -16,10 +24,13 @@ export const exportSource = (conn) => ({
       `(SELECT CONCAT(COALESCE(BillNo, ''), '|', COALESCE(DATE_FORMAT(BillDate, '%Y-%m-%d'), '')) AS BillKey,
                BillNo AS SortKey, MAX(Phone) AS Phone, MAX(Patient) AS Patient, MAX(Address) AS Address,
                MAX(Doctor) AS Doctor, BillNo, DATE_FORMAT(BillDate, '%Y-%m-%d') AS BillDate,
-               MAX(BillTotal) AS Total, COUNT(*) AS Items, NULL AS Remarks, NULL AS ReminderId
+               MAX(BillTotal) AS Total, COUNT(*) AS Items, NULL AS Remarks, NULL AS ReminderId,
+               NULL AS CreatedBy, NULL AS CreatedAt, NULL AS ModifiedBy, NULL AS ModifiedAt,
+               NULL AS AgentBillId, NULL AS WhatsappStatus, NULL AS WhatsappSentAt
         FROM CustomerBills
+        ${mobile ? 'WHERE TRIM(Phone) = ?' : ''}
         GROUP BY BillNo, BillDate) AS ??`,
-      [alias],
+      mobile ? [bareMobile(mobile), alias] : [alias],
     ),
   medicineFilter: (medicine) =>
     conn.raw(
@@ -43,7 +54,7 @@ export const exportSource = (conn) => ({
 const AGENT_PHONE = "CASE WHEN ab.phone LIKE '+91%' THEN SUBSTRING(ab.phone, 4) ELSE ab.phone END";
 
 /** Source over the bills an RxBridge agent sent for `branchId` (main database). */
-export const agentBillsSource = (conn, branchId) => ({
+export const agentBillsSource = (conn, branchId, { mobile } = {}) => ({
   conn,
   bills: (alias) =>
     conn.raw(
@@ -51,10 +62,15 @@ export const agentBillsSource = (conn, branchId) => ({
                ab.patient_name AS Patient, ab.address AS Address, ab.doctor AS Doctor, ab.bill_no AS BillNo,
                DATE_FORMAT(ab.bill_date, '%Y-%m-%d') AS BillDate, ab.total AS Total, ab.item_count AS Items,
                ab.remarks AS Remarks,
-               (SELECT rc.id FROM reminder_cycles rc WHERE rc.agent_bill_id = ab.id) AS ReminderId
+               (SELECT rc.id FROM reminder_cycles rc WHERE rc.agent_bill_id = ab.id) AS ReminderId,
+               ab.created_by_name AS CreatedBy, DATE_FORMAT(ab.bill_created_at, '%Y-%m-%dT%H:%i:%s') AS CreatedAt,
+               ab.modified_by_name AS ModifiedBy, DATE_FORMAT(ab.bill_modified_at, '%Y-%m-%dT%H:%i:%s') AS ModifiedAt,
+               ab.id AS AgentBillId,
+               (SELECT s.status FROM bill_whatsapp_sends s WHERE s.agent_bill_id = ab.id ORDER BY s.id DESC LIMIT 1) AS WhatsappStatus,
+               (SELECT MAX(s.sent_at) FROM bill_whatsapp_sends s WHERE s.agent_bill_id = ab.id) AS WhatsappSentAt
         FROM agent_bills ab
-        WHERE ab.branch_id = ?) AS ??`,
-      [branchId, alias],
+        WHERE ab.branch_id = ? ${mobile ? 'AND ab.phone = ?' : ''}) AS ??`,
+      mobile ? [branchId, mobile, alias] : [branchId, alias],
     ),
   medicineFilter: (medicine) =>
     conn.raw('EXISTS (SELECT 1 FROM agent_bill_items x WHERE x.agent_bill_id = b.SortKey AND x.product = ?)', [medicine]),
@@ -115,7 +131,11 @@ export async function list(src, { search, mobileStatus, medicine, limit, offset 
   if (mobileStatus !== 'all') MOBILE_FILTERS[mobileStatus](query);
   const [{ total }] = await query.clone().count({ total: '*' });
   const rows = await query
-    .select('b.BillKey', 'b.SortKey', 'b.Phone', 'b.Patient', 'b.Address', 'b.Doctor', 'b.BillNo', 'b.BillDate', 'b.Total', 'b.Items', 'b.Remarks', 'b.ReminderId')
+    .select(
+      'b.BillKey', 'b.SortKey', 'b.Phone', 'b.Patient', 'b.Address', 'b.Doctor', 'b.BillNo', 'b.BillDate', 'b.Total', 'b.Items',
+      'b.Remarks', 'b.ReminderId', 'b.CreatedBy', 'b.CreatedAt', 'b.ModifiedBy', 'b.ModifiedAt',
+      'b.AgentBillId', 'b.WhatsappStatus', 'b.WhatsappSentAt',
+    )
     .orderBy('b.BillDate', 'desc')
     .orderBy('b.SortKey', 'desc')
     .limit(limit)

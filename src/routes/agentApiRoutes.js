@@ -38,7 +38,7 @@ export const agentApiRoutes = Router();
 agentApiRoutes.use(failedAuthLimiter, authenticateAgent, agentLimiter, express.json({ limit: '10mb' }));
 
 agentApiRoutes.get('/ping', (req, res) => {
-  res.json({ serverTime: new Date().toISOString(), agentId: req.agent.id });
+  res.json({ serverTime: new Date().toISOString(), agentId: req.agent.id, agent: agentApiService.agentIdentity(req.agent) });
 });
 
 agentApiRoutes.post('/ingest/bills', requireIdempotencyKey, validate({ body: ingestBillsSchema }), async (req, res) => {

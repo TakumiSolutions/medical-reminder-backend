@@ -82,7 +82,14 @@ async function loadDeliveries(cycleIds, conn = db) {
     .leftJoin('users as assignee', 'assignee.id', 'deliveries.assigned_to')
     .whereIn('deliveries.reminder_cycle_id', cycleIds)
     .whereNot('deliveries.status', 'cancelled')
-    .select('deliveries.id', 'deliveries.reminder_cycle_id', 'deliveries.method', 'deliveries.status', 'assignee.full_name as assigned_name');
+    .select(
+      'deliveries.id',
+      'deliveries.reminder_cycle_id',
+      'deliveries.method',
+      'deliveries.status',
+      'deliveries.address',
+      'assignee.full_name as assigned_name',
+    );
   const items = await loadDeliveryItems(rows.map((r) => r.id), conn);
   for (const row of rows) {
     map.set(String(row.reminder_cycle_id), {
@@ -90,6 +97,8 @@ async function loadDeliveries(cycleIds, conn = db) {
       id: String(row.id),
       method: row.method,
       status: row.status,
+      // Where to deliver (null for store pickup); printed on the order slip.
+      address: row.address ?? null,
       assignedTo: row.assigned_name ?? null,
     });
   }
@@ -136,6 +145,40 @@ const CYCLE_COLUMNS = [
   'outcome_user.full_name as outcome_by_name',
 ];
 
+// A bill made up to this long before the order was marked still counts as the order's bill.
+const ORDER_BILL_SLACK_MS = 12 * 3600_000;
+
+/**
+ * For ordered cycles: the latest RxBridge bill for the customer's mobile at the cycle's branch,
+ * received since (shortly before) the order was marked — the bill made in Prompt for the
+ * order, used to fill the amount on the order slip. Keyed by cycle id.
+ */
+async function loadOrderBills(rows, conn = db) {
+  const map = new Map();
+  const ordered = rows.filter((r) => r.outcome === 'ordered' && r.outcome_at && r.mobile);
+  if (ordered.length === 0) return map;
+  const since = (row) => new Date(new Date(row.outcome_at).getTime() - ORDER_BILL_SLACK_MS);
+  const earliest = new Date(Math.min(...ordered.map((r) => since(r).getTime())));
+  const bills = await conn('agent_bills')
+    .whereIn('phone', [...new Set(ordered.map((r) => r.mobile))])
+    .whereIn('branch_id', [...new Set(ordered.map((r) => r.branch_id))])
+    .where('first_received_at', '>=', earliest)
+    .orderBy('first_received_at', 'desc')
+    .orderBy('id', 'desc')
+    .select('id', 'phone', 'branch_id', 'bill_no', 'bill_date', 'total', 'first_received_at');
+  for (const row of ordered) {
+    const bill = bills.find(
+      (b) =>
+        b.phone === row.mobile &&
+        b.branch_id === row.branch_id &&
+        String(b.id) !== String(row.agent_bill_id ?? '') &&
+        new Date(b.first_received_at) >= since(row),
+    );
+    if (bill) map.set(String(row.id), { id: String(bill.id), billNo: bill.bill_no, billDate: toIsoDate(bill.bill_date), total: Number(bill.total) });
+  }
+  return map;
+}
+
 /** @param scopeBranchIds branches the caller may see (null = all) */
 export async function list({ view, today, search, scopeBranchIds, branchId, limit, offset }) {
   const query = baseQuery();
@@ -164,8 +207,20 @@ export async function list({ view, today, search, scopeBranchIds, branchId, limi
     .offset(offset);
   const ids = rows.map((r) => r.id);
   const billIds = rows.filter((r) => r.agent_bill_id).map((r) => r.agent_bill_id);
-  const [reminders, deliveries, billItems] = await Promise.all([loadReminders(ids), loadDeliveries(ids), loadBillItems(billIds)]);
-  return { items: rows.map((r) => toCycle(r, reminders, today, deliveries, billItems)), total: Number(total) };
+  const [reminders, deliveries, billItems, orderBills] = await Promise.all([
+    loadReminders(ids),
+    loadDeliveries(ids),
+    loadBillItems(billIds),
+    view === 'ordered' ? loadOrderBills(rows) : new Map(),
+  ]);
+  return {
+    items: rows.map((r) => {
+      const cycle = toCycle(r, reminders, today, deliveries, billItems);
+      // Ordered page only: the Prompt bill made for the order, if RxBridge has sent it.
+      return view === 'ordered' ? { ...cycle, orderBill: orderBills.get(String(r.id)) ?? null } : cycle;
+    }),
+    total: Number(total),
+  };
 }
 
 /** Counts per view, for the tab badges. */

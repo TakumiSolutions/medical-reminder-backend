@@ -73,6 +73,29 @@ const billItemSchema = z.object({
   amount: optionalDecimal(),
 });
 
+/** Prompt Rx user (UserMaster) as { code, name }; a non-integer code is stored as null. */
+const billUser = z
+  .object({
+    code: z
+      .union([z.number(), z.string()])
+      .nullish()
+      .transform((value) => {
+        const n = value == null || String(value).trim() === '' ? NaN : Number(value);
+        return Number.isInteger(n) && Math.abs(n) <= 2_147_483_647 ? n : null;
+      }),
+    name: text(100),
+  })
+  .nullish()
+  .transform((value) => (value && (value.code !== null || value.name !== null) ? value : null));
+
+/** Shop wall-clock time "YYYY-MM-DDTHH:mm:ss" (no zone); anything else -> null. */
+const localDateTime = text(40).transform((value) => {
+  const match = value && /^(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value);
+  if (!match || Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4] ?? 0) > 59) return null;
+  if (!z.iso.date().safeParse(match[1]).success) return null;
+  return `${match[1]}T${match[2]}:${match[3]}:${match[4] ?? '00'}`;
+});
+
 const billSchema = z.object({
   id: asciiIdentifier(64, 'Bill id'),
   billNo: identifier(40, 'Bill number'),
@@ -87,6 +110,12 @@ const billSchema = z.object({
   // Sent by RxBridge 0.1.2 and later. Left undefined when absent so older agents' request
   // hashes (idempotency) stay the same.
   remarks: text(500).optional(),
+  // Who made / last edited the bill in Prompt Rx, and when (RxBridge 0.1.4 and later;
+  // optional for the same reason as remarks).
+  createdBy: billUser.optional(),
+  createdAt: localDateTime.optional(),
+  modifiedBy: billUser.optional(),
+  modifiedAt: localDateTime.optional(),
   total: decimal(),
   items: z.array(billItemSchema).max(MAX_ITEMS_PER_BILL, `At most ${MAX_ITEMS_PER_BILL} items per bill.`).default([]),
 });

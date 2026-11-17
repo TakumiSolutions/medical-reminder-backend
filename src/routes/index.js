@@ -5,6 +5,7 @@ import { authenticate, requirePermission } from '../middleware/auth.js';
 import * as accessRepository from '../repositories/accessRepository.js';
 import { agentRoutes } from './agentRoutes.js';
 import { auditLogRoutes } from './auditLogRoutes.js';
+import { billRoutes } from './billRoutes.js';
 import { authRoutes } from './authRoutes.js';
 import { customerRoutes } from './customerRoutes.js';
 import { dashboardRoutes } from './dashboardRoutes.js';
@@ -35,6 +36,7 @@ apiRoutes.use('/deliveries', deliveryRoutes);
 apiRoutes.use('/dashboard', dashboardRoutes);
 apiRoutes.use('/agents', agentRoutes);
 apiRoutes.use('/inbox', inboxRoutes);
+apiRoutes.use('/bills', billRoutes);
 
 // Only the branches the caller has access to.
 apiRoutes.get('/branches', authenticate, requirePermission(PERMISSIONS.BRANCHES_READ), async (req, res) => {

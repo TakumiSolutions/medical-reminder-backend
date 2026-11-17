@@ -98,6 +98,11 @@ Set from the Customers page (**Set reminder**), per medicine:
 - **Automatic reminders from bill remarks:** when an RxBridge bill's remark is a number of days (`30`, `15 days`, `10 DAY`), one reminder for the whole bill is scheduled on day N-2, N-1 and N after the bill date, listing all its medicines. The customer is created (or linked to the branch) by mobile number and the medicines are recorded. This runs when the bill arrives, plus a catch-up at start-up and every 15 minutes. Bills without a valid mobile, without medicines, or whose dates have all passed are skipped; each bill gets at most one reminder, so changing the remark later does not reschedule it. These bills are highlighted green on the **Prompt Customer** page.
 - **WhatsApp sending (Meta WhatsApp Cloud API):** from `WHATSAPP_SEND_TIME` (default 10:00, `APP_TIMEZONE`) each day's scheduled reminders are sent from the branch's own number, checked every 5 minutes. Configure per branch code: `WHATSAPP_CENTRAL_PHONE_NUMBER_ID` + `WHATSAPP_CENTRAL_ACCESS_TOKEN`, `WHATSAPP_SPEEDWELL_PHONE_NUMBER_ID` + `WHATSAPP_SPEEDWELL_ACCESS_TOKEN` (optional `_TEMPLATE_NAME` / `_TEMPLATE_LANGUAGE` per branch). A branch without both values sends nothing. Messages use the approved template `WHATSAPP_TEMPLATE_NAME` (default `medicine_reminder`, language `WHATSAPP_TEMPLATE_LANGUAGE`); `WHATSAPP_TEMPLATE_PARAMS` lists what fills its `{{1}}`, `{{2}}`, … (`customer`, `medicine`, `branch`, `billdate`; default `customer,medicine`). Rate limits and server errors are retried (up to 5 attempts that day); other errors mark the reminder **failed** with the reason. Each reminder is claimed before sending, so several servers on the same database never send it twice; a send interrupted mid-way is marked failed, not resent. Dates that passed without being sent stay as they are (never sent late).
 - **WhatsApp inbox** (page *WhatsApp inbox*, permissions `whatsapp_inbox.read` / `whatsapp_inbox.reply`): customer replies arrive on the Meta webhook `POST /webhooks/whatsapp` (verified with `WHATSAPP_WEBHOOK_VERIFY_TOKEN` on `GET`, every delivery signed with `WHATSAPP_APP_SECRET`; both must be set or the webhook is off). Messages are stored per branch by the number they came in on (`WHATSAPP_<CODE>_PHONE_NUMBER_ID`), together with the reminders sent and their delivered/read ticks; a reminder WhatsApp later reports as undeliverable is marked failed. Users see only conversations of their own branches (Superadmin sees all, with a tab per branch). Staff can reply with text within 24 hours of the customer's last message (a WhatsApp rule). Photos, voice notes and documents are shown as a placeholder with their caption.
+- **Bills on WhatsApp (PDF):** an RxBridge bill whose remark is a number of days is also sent to the customer automatically as a PDF copy, from the branch's number, as soon as it arrives (then checked every 2 minutes; rate limits and server errors retried up to 5 times). Only bills dated today or yesterday are sent automatically, so old bills are never sent, and each bill is sent automatically at most once. Staff with `whatsapp_inbox.reply` can also send any RxBridge bill with **Send on WhatsApp** in a customer's bills (Customers page → click the customer); that answers with WhatsApp's result and is audited (`bill.whatsapp_sent`). Every send is listed in table `bill_whatsapp_sends`, shown on the bill ("Bill sent on WhatsApp") on the Prompt Customer page and in the customer's bills, and added to the WhatsApp inbox. Bills from a Prompt export (no RxBridge) cannot be sent.
+  - Automatic sending is **off** until `WHATSAPP_AUTO_SEND_BILLS=true`; set it once the template below is approved (bills dated today and yesterday are then sent straight away). Sending by hand works without it.
+  - Needs an approved Meta template `WHATSAPP_BILL_TEMPLATE_NAME` (default `bill_copy`, per branch `WHATSAPP_<CODE>_BILL_TEMPLATE_NAME`, language `WHATSAPP_TEMPLATE_LANGUAGE`) with a **Document** header and a body whose `{{1}}`, `{{2}}`, … are filled per `WHATSAPP_BILL_TEMPLATE_PARAMS` (`customer`, `billno`, `billdate`, `total`, `branch`; default all five in that order), e.g. *"Hello {{1}}, here is your bill {{2}} dated {{3}} for {{4}} from {{5}}. Thank you."* Category: Utility.
+  - **Central and Speedwell bills are drawn on each store's own Cash Memo** (`src/services/billTemplates.js`, from the printed bill books): Shivam Medical Centre in orange/maroon, Shivam Medical Store in pink/purple, with logo, picture, Gujarati name and address, WhatsApp number, GSTIN / FSSAI / D.L. numbers, the store's notes, *24 HOURS DAY & NIGHT*, who made the bill and when, and Sub Total / Saved / Total. Pages are 21 × 11 cm, the size of the printed memo; 17 lines per page, longer bills continue on more pages. **Back page:** a branch whose memo has a printed back gets it as the last page of the WhatsApp copy (Speedwell: offers, WhatsApp number, delivery picture and a QR code drawn from its WhatsApp business link, `back` in `billTemplates.js`; the crossed-out first offer is left out). Central has no back page yet. Printing (`/api/bills/:id/pdf`) gives the front only, because the paper memo already has the back. Fonts (`src/assets/bills/fonts`, SIL Open Font License): Mukta Vaani (Gujarati), Noto Sans Devanagari, Dancing Script. Logos and pictures (`src/assets/bills/images`) are cut from the scanned memos; replace them with the original artwork for sharper prints.
+  - Any other branch gets a plain bill: The PDF shows `BILL_STORE_NAME` (default *Shivam Medical Store*), the branch's `BILL_<CODE>_HEADER` lines (separated by `|`: address, phone, GSTIN, DL no.), patient, doctor, bill no and date, every line (pack, mfg, batch, expiry, qty, MRP, rate, GST %, amount) and the totals (sub total, GST included, saved, total).
 - The last bill date is stored when a medicine is added from Prompt; if none is stored, the dialog asks for it (never a future date).
 - One cycle per scheduling; it does not repeat. A medicine can have only one open reminder at a time.
 - Dates already in the past when scheduling are recorded as *skipped* (never sent late). If all three have passed, scheduling is refused.
@@ -106,7 +111,6 @@ Set from the Customers page (**Set reminder**), per medicine:
 - Outcomes can be undone: switch Ordered ↔ Refused, or **Move back to reminders**, which restores the cancelled dates (dates already passed become *skipped*). Every change is in the audit log.
 - Stopped reminders cannot get an outcome, and reminders with an outcome cannot be stopped.
 - "Today" uses `APP_TIMEZONE` (default `Asia/Kolkata`).
-- **Messages are not sent yet**: reminders are scheduled and shown until a WhatsApp provider is connected.
 
 ## Deliveries
 
@@ -146,9 +150,9 @@ Every request: `Authorization: Bearer <token>`. JSON bodies up to 10 MB after de
 
 | Method & path | Request | Response |
 | --- | --- | --- |
-| `GET /api/v1/ping` | — | 200 `{ "serverTime": "<ISO 8601>", "agentId": "<id>" }` |
+| `GET /api/v1/ping` | — | 200 `{ "serverTime": "<ISO 8601>", "agentId": "<id>", "agent": { "id", "name", "branch": { "id", "name" } } }` |
 | `POST /api/v1/ingest/bills` | `Idempotency-Key` header + bills (below) | 200 `{ "accepted": <number of bills in the request> }` |
-| `POST /api/v1/agents/heartbeat` | status (below) | 200 `{ "serverTime": "<ISO 8601>" }` |
+| `POST /api/v1/agents/heartbeat` | status (below) | 200 `{ "serverTime": "<ISO 8601>", "agent": { "id", "name", "branch": { "id", "name" } } }` |
 
 ```json
 {
@@ -157,6 +161,8 @@ Every request: `Authorization: Bearer <token>`. JSON bodies up to 10 MB after de
     {
       "id": "104523", "billNo": "S-2041", "series": "HD", "homeDelivery": true, "date": "2026-10-22",
       "phone": "98765 43210", "patient": "Ramesh Kumar", "address": "12, MG Road", "doctor": "Dr. Rao", "total": 1250.5,
+      "createdBy": { "code": 3, "name": "RAMESH" }, "createdAt": "2026-10-22T10:32:05",
+      "modifiedBy": { "code": 7, "name": "SURESH" }, "modifiedAt": "2026-10-22T18:04:00",
       "items": [
         { "product": "PARACETAMOL 650MG TAB", "pack": "15'S", "mfg": "MICRO", "qty": 2, "free": 0, "mrp": 35.2,
           "batch": "B1234", "expiry": "03/27", "rate": 30.17, "gstPct": 12, "gstAmt": 3.62, "amount": 64 }
@@ -169,6 +175,8 @@ Every request: `Authorization: Bearer <token>`. JSON bodies up to 10 MB after de
 - 1–1000 bills per request, at most 500 items per bill.
 - Required: `source.database` (≤ 32 chars of letters, digits, `_ . -`), `source.job` (≤ 64 chars of letters, digits, `_`), `id` (≤ 64 printable ASCII; the billing system's `TagBillingRef`), `billNo` (≤ 40), `date` (`YYYY-MM-DD`), `total`.
 - Everything else may be null, empty or missing. Numbers may be JSON numbers or numeric strings (±100,000,000; `gstPct` ±100); ids and text may be numbers. Text is trimmed and cut to its column size (patient 150, address 500, doctor 150, product 200, pack 40, mfg 100, batch 40, series 20).
+- `createdBy` / `modifiedBy` are the Prompt Rx staff user (`UserMaster.Code` and `Name`) who made / last edited the bill; `createdAt` / `modifiedAt` are the shop PC's wall-clock time (`YYYY-MM-DDTHH:mm:ss`, no zone), stored as given. Sent by RxBridge 0.1.4 and later; a non-integer code or unreadable time is stored as null.
+- The branch is never part of the request: every bill is stored under the agent and branch the token belongs to. Ping and heartbeat answers name that agent and branch, so the shop PC can show which branch it sends as.
 - `expiry` is stored as `MM/yy` (`3/27` becomes `03/27`); any other format is stored as null. An invalid `phone` is stored as null — one bad phone never rejects the batch.
 - Each bill is upserted by `(agent, source.database, id)` and its items are replaced, all in one transaction. A bill repeated within one request: the last copy wins.
 
@@ -224,6 +232,9 @@ Status codes:
 
 | GET | `/api/customers` | `customers.read` (`search`, `branchId`, `medicine`, `page`, `pageSize`) |
 | GET | `/api/customers/:id` | `customers.read` |
+| GET | `/api/customers/:id/bills` | `customers.read` (the customer's Prompt bills, matched by mobile, at every Prompt branch the caller can see — RxBridge bills or the branch's export — newest first, up to 200 per branch: `{ customer, items, truncated, unavailable }`; a branch whose data cannot be read is listed in `unavailable`) |
+| GET | `/api/bills/:id/pdf` | `customers.read` (RxBridge bill `:id` as a PDF for printing: the memo front only, without the back page sent on WhatsApp; 404 outside the caller's branches) |
+| POST | `/api/bills/:id/whatsapp` | `whatsapp_inbox.reply` (sends RxBridge bill `:id` to its mobile as a PDF now: 200 `{ status, sentAt, mobile }`; 409 `WHATSAPP_NOT_CONFIGURED`, 502 `WHATSAPP_SEND_FAILED` with WhatsApp's reason) |
 | POST | `/api/customers` | `customers.manage` (200 + `existed: true` when the mobile matched) |
 | PATCH | `/api/customers/:id` | `customers.manage` |
 | GET | `/api/prompt/sources` | `prompt_customers.read` (branches with Prompt data the caller can see) |

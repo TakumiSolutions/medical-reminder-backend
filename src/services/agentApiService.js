@@ -6,6 +6,7 @@ import * as agentRepository from '../repositories/agentRepository.js';
 import { AppError } from '../utils/errors.js';
 import { normalizeIndianMobile } from '../utils/phone.js';
 import { scheduleFromBillRemarks } from './billReminderService.js';
+import { runAutoBills } from './billSender.js';
 
 const KEY_RETENTION_DAYS = 7;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
@@ -28,6 +29,9 @@ export function canonicalJson(value) {
 export const hashIngestRequest = ({ source, bills }) =>
   createHash('sha256').update(canonicalJson({ source, bills })).digest('hex');
 
+// "YYYY-MM-DDTHH:mm:ss" -> "YYYY-MM-DD HH:mm:ss": stored as given, with no timezone conversion.
+const toSqlDateTime = (value) => (value ? value.replace('T', ' ') : null);
+
 /** Validated bill -> agent_bills row (plus its item rows). An invalid phone is stored as null. */
 export function toBillRow(bill) {
   const phone = normalizeIndianMobile(bill.phone);
@@ -42,6 +46,12 @@ export function toBillRow(bill) {
     address: bill.address,
     doctor: bill.doctor,
     remarks: bill.remarks ?? null,
+    created_by_code: bill.createdBy?.code ?? null,
+    created_by_name: bill.createdBy?.name ?? null,
+    bill_created_at: toSqlDateTime(bill.createdAt),
+    modified_by_code: bill.modifiedBy?.code ?? null,
+    modified_by_name: bill.modifiedBy?.name ?? null,
+    bill_modified_at: toSqlDateTime(bill.modifiedAt),
     total: bill.total,
     items: bill.items.map((item) => ({
       product: item.product,
@@ -125,12 +135,22 @@ export async function ingestBills(agent, idempotencyKey, payload) {
     agentId: agent.id,
     sourceDatabase: payload.source.database,
     sourceBillIds: bills.filter((b) => b.remarks).map((b) => b.source_bill_id),
-  }).catch((error) => console.error('Scheduling reminders from bill remarks failed:', error.message));
+  })
+    .catch((error) => console.error('Scheduling reminders from bill remarks failed:', error.message))
+    // Bills with a day-count remark also go to the customer on WhatsApp as a PDF.
+    .then(() => (bills.some((b) => b.remarks) ? runAutoBills() : null));
   return result;
 }
+
+/** Who the token belongs to, so the shop PC can show which agent and branch it sends as. */
+export const agentIdentity = (agent) => ({
+  id: agent.id,
+  name: agent.name,
+  branch: { id: agent.branchId, name: agent.branchName },
+});
 
 /** Keeps only the latest heartbeat. */
 export async function recordHeartbeat(agent, heartbeat) {
   await agentRepository.saveHeartbeat(agent.id, heartbeat);
-  return { serverTime: new Date().toISOString() };
+  return { serverTime: new Date().toISOString(), agent: agentIdentity(agent) };
 }

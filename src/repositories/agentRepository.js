@@ -21,10 +21,17 @@ function toAgent(row) {
 /** The active agent holding `tokenHash`, or null. */
 export async function findActiveByTokenHash(tokenHash) {
   const row = await db('agents')
-    .where({ token_hash: tokenHash, is_active: true })
-    .first('id', 'name', 'branch_id', 'last_seen_at');
+    .join('branches', 'branches.id', 'agents.branch_id')
+    .where({ 'agents.token_hash': tokenHash, 'agents.is_active': true })
+    .first('agents.id', 'agents.name', 'agents.branch_id', 'agents.last_seen_at', 'branches.name as branch_name');
   if (!row) return null;
-  return { id: String(row.id), name: row.name, branchId: row.branch_id, lastSeenAt: row.last_seen_at };
+  return {
+    id: String(row.id),
+    name: row.name,
+    branchId: row.branch_id,
+    branchName: row.branch_name,
+    lastSeenAt: row.last_seen_at,
+  };
 }
 
 export async function touchLastSeen(id) {

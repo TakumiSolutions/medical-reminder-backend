@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import knexFactory from 'knex';
+import { agentBillsSource, exportSource } from '../src/repositories/promptCustomerRepository.js';
 import { normalizeIndianMobile } from '../src/utils/phone.js';
 import { createCustomerSchema, updateCustomerSchema } from '../src/validators/customerValidators.js';
 
@@ -32,5 +34,25 @@ describe('customer validators', () => {
     assert.deepEqual(updateCustomerSchema.parse({ notes: 'VIP' }), { notes: 'VIP' });
     assert.deepEqual(updateCustomerSchema.parse({ address: '' }), { address: null });
     assert.equal(updateCustomerSchema.safeParse({}).success, false);
+  });
+});
+
+describe("a customer's Prompt bills", () => {
+  // A query builder that never connects; only the generated SQL is checked.
+  const sqlOf = (source) => knexFactory({ client: 'mysql2' }).from(source.bills('b')).select('*').toString();
+
+  it('filters RxBridge bills by the stored +91 mobile, within the branch', () => {
+    const sql = sqlOf(agentBillsSource(knexFactory({ client: 'mysql2' }), 3, { mobile: '+919876543210' }));
+    assert.match(sql, /WHERE ab\.branch_id = 3 AND ab\.phone = '\+919876543210'\) AS `b`/);
+  });
+
+  it('filters export bills by the bare 10-digit mobile', () => {
+    const sql = sqlOf(exportSource(knexFactory({ client: 'mysql2' }), { mobile: '+919876543210' }));
+    assert.match(sql, /WHERE TRIM\(Phone\) = '9876543210'\s+GROUP BY BillNo, BillDate/);
+  });
+
+  it('lists every bill when no mobile is given', () => {
+    assert.doesNotMatch(sqlOf(agentBillsSource(knexFactory({ client: 'mysql2' }), 3)), /ab\.phone =/);
+    assert.doesNotMatch(sqlOf(exportSource(knexFactory({ client: 'mysql2' }))), /TRIM\(Phone\) =/);
   });
 });

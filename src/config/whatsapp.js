@@ -15,6 +15,13 @@ export function whatsappConfigFor(branchCode, source = process.env) {
     phoneNumberId,
     accessToken,
     templateName: read('TEMPLATE_NAME') ?? env.WHATSAPP_TEMPLATE_NAME,
+    billTemplateName: read('BILL_TEMPLATE_NAME') ?? env.WHATSAPP_BILL_TEMPLATE_NAME,
     language: read('TEMPLATE_LANGUAGE') ?? env.WHATSAPP_TEMPLATE_LANGUAGE,
   };
+}
+
+/** Lines printed under the store name on a branch's bill PDFs (BILL_<CODE>_HEADER, "|"-separated). */
+export function billHeaderLinesFor(branchCode, source = process.env) {
+  const raw = source[`BILL_${String(branchCode).toUpperCase().replace(/[^A-Z0-9]/g, '_')}_HEADER`] ?? '';
+  return raw.split('|').map((line) => line.trim()).filter(Boolean);
 }

@@ -3,6 +3,7 @@ import { db } from '../db/knex.js';
 import * as accessRepository from '../repositories/accessRepository.js';
 import * as auditRepository from '../repositories/auditRepository.js';
 import * as customerRepository from '../repositories/customerRepository.js';
+import { listBillsForMobile } from './promptCustomerService.js';
 import { env } from '../config/env.js';
 import { todayIn } from '../utils/dates.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
@@ -52,6 +53,12 @@ export async function getCustomer(auth, id) {
   const customer = await customerRepository.findById(id);
   if (!customer || !isVisibleTo(auth, customer)) throw notFound('Customer not found.');
   return forViewer(auth, customer);
+}
+
+/** The customer's Prompt bills (matched by mobile) at the caller's branches, newest first. */
+export async function listCustomerBills(auth, id) {
+  const customer = await getCustomer(auth, id);
+  return { customer: { id: customer.id, fullName: customer.fullName, mobile: customer.mobile }, ...(await listBillsForMobile(auth, customer.mobile)) };
 }
 
 /** Medicine names for the filter, limited to the caller's branches. */

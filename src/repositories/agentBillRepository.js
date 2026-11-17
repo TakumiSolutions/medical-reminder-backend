@@ -16,6 +16,12 @@ const MERGE_COLUMNS = [
   'address',
   'doctor',
   'remarks',
+  'created_by_code',
+  'created_by_name',
+  'bill_created_at',
+  'modified_by_code',
+  'modified_by_name',
+  'bill_modified_at',
   'total',
   'item_count',
   'updated_at',
@@ -100,6 +106,15 @@ export async function upsertBills(conn, { agentId, branchId, sourceDatabase, bil
   }
 }
 
+const billUser = (code, name) => (code == null && name == null ? null : { code: code ?? null, name: name ?? null });
+
+/**
+ * Shop wall-clock DATETIME -> "YYYY-MM-DDTHH:mm:ss". The connection uses timezone 'Z', so
+ * the Date holds the stored value in UTC.
+ */
+export const toLocalDateTime = (value) =>
+  value == null ? null : value instanceof Date ? value.toISOString().slice(0, 19) : String(value).replace(' ', 'T').slice(0, 19);
+
 function toBill(row) {
   return {
     id: String(row.id),
@@ -116,6 +131,10 @@ function toBill(row) {
     address: row.address,
     doctor: row.doctor,
     remarks: row.remarks ?? null,
+    createdBy: billUser(row.created_by_code, row.created_by_name),
+    createdAt: toLocalDateTime(row.bill_created_at),
+    modifiedBy: billUser(row.modified_by_code, row.modified_by_name),
+    modifiedAt: toLocalDateTime(row.bill_modified_at),
     total: Number(row.total),
     itemCount: row.item_count,
     firstReceivedAt: row.first_received_at,

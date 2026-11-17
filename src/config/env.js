@@ -86,6 +86,28 @@ const envSchema = z.object({
       }
       return params;
     }),
+  // Bills sent on WhatsApp as a PDF: an approved template with a Document header, and what
+  // fills its body {{1}}, {{2}}, … in order. A branch may override the name with
+  // WHATSAPP_<BRANCH CODE>_BILL_TEMPLATE_NAME.
+  WHATSAPP_BILL_TEMPLATE_NAME: z.string().min(1).default('bill_copy'),
+  // Automatic sending of day-count bills. Off until the bill template is approved by Meta;
+  // sending by hand works either way.
+  WHATSAPP_AUTO_SEND_BILLS: booleanString.default(false),
+  WHATSAPP_BILL_TEMPLATE_PARAMS: z
+    .string()
+    .default('customer,billno,billdate,total,branch')
+    .transform((value, ctx) => {
+      const params = value.split(',').map((p) => p.trim()).filter(Boolean);
+      const unknown = params.filter((p) => !['customer', 'billno', 'billdate', 'total', 'branch'].includes(p));
+      if (unknown.length) {
+        ctx.addIssue({ code: 'custom', message: `Unknown bill template params: ${unknown.join(', ')} (use customer, billno, billdate, total, branch).` });
+        return z.NEVER;
+      }
+      return params;
+    }),
+  // Store name printed at the top of bill PDFs. Each branch may add lines under it with
+  // BILL_<BRANCH CODE>_HEADER, lines separated by "|" (address, phone, GSTIN, DL no.).
+  BILL_STORE_NAME: z.string().trim().min(1).default('Shivam Medical Store'),
   // Webhook for customer replies (WhatsApp inbox): the App Secret signs each request, and the
   // verify token is the one entered in Meta's webhook settings. Without both, the webhook is off.
   WHATSAPP_APP_SECRET: z.string().min(1).optional(),

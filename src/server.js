@@ -3,6 +3,7 @@ import { env } from './config/env.js';
 import { db } from './db/knex.js';
 import { destroyPromptConnections } from './db/promptDb.js';
 import { startBillReminderCatchUp } from './services/billReminderService.js';
+import { startBillSender } from './services/billSender.js';
 import { startReminderSender } from './services/reminderSender.js';
 
 const server = createApp().listen(env.PORT, () => {
@@ -10,11 +11,13 @@ const server = createApp().listen(env.PORT, () => {
 });
 const stopBillReminderCatchUp = startBillReminderCatchUp();
 const stopReminderSender = startReminderSender();
+const stopBillSender = startBillSender();
 
 function shutdown(signal) {
   console.log(`${signal} received, shutting down.`);
   stopBillReminderCatchUp();
   stopReminderSender();
+  stopBillSender();
   server.close(async () => {
     await Promise.all([db.destroy(), destroyPromptConnections()]);
     process.exit(0);

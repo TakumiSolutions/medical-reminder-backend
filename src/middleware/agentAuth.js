@@ -25,7 +25,7 @@ export async function authenticateAgent(req, _res, next) {
     await agentRepository.touchLastSeen(agent.id);
   }
 
-  req.agent = { id: agent.id, branchId: agent.branchId, name: agent.name };
+  req.agent = { id: agent.id, branchId: agent.branchId, branchName: agent.branchName, name: agent.name };
   next();
 }
 
