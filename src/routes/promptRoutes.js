@@ -14,9 +14,15 @@ const listQuerySchema = z.object({
   search: z.string().trim().max(100).optional(),
   mobileStatus: z.enum(['all', 'valid', 'invalid', 'missing']).default('all'),
   medicine: z.string().trim().min(1).max(100).optional(),
+  reminderStatus: z.enum(['in_reminders', 'not_in_reminders']).optional(),
+  billDateFrom: z.iso.date().optional(),
+  billDateTo: z.iso.date().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
-});
+}).refine(
+  ({ billDateFrom, billDateTo }) => !billDateFrom || !billDateTo || billDateFrom <= billDateTo,
+  { path: ['billDateTo'], message: 'End date must be on or after start date.' },
+);
 
 export const promptRoutes = Router();
 

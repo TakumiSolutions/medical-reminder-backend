@@ -91,7 +91,7 @@ function toBill(row, medicines, cloudByMobile, branchId, remindersByCycle) {
 }
 
 /** One row per bill, newest first. */
-export async function listCustomers(auth, { branchId, search, mobileStatus, medicine, page, pageSize }) {
+export async function listCustomers(auth, { branchId, search, mobileStatus, medicine, reminderStatus, billDateFrom, billDateTo, page, pageSize }) {
   const { branch, kind, src } = await resolveSource(auth, branchId);
 
   const { result, medicines } = await run(kind, async () => {
@@ -99,6 +99,9 @@ export async function listCustomers(auth, { branchId, search, mobileStatus, medi
       search,
       mobileStatus,
       medicine,
+      reminderStatus,
+      billDateFrom,
+      billDateTo,
       limit: pageSize,
       offset: (page - 1) * pageSize,
     });

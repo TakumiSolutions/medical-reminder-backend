@@ -117,11 +117,15 @@ function applySearch(query, search) {
  * One row per bill, newest first, plus counts by mobile status for the same search/medicine filter.
  * `medicine` keeps bills that contain that product.
  */
-export async function list(src, { search, mobileStatus, medicine, limit, offset }) {
+export async function list(src, { search, mobileStatus, medicine, reminderStatus, billDateFrom, billDateTo, limit, offset }) {
   const { conn } = src;
   const base = conn.from(src.bills('b'));
   applySearch(base, search);
   if (medicine) base.whereRaw(src.medicineFilter(medicine));
+  if (billDateFrom) base.where('b.BillDate', '>=', billDateFrom);
+  if (billDateTo) base.where('b.BillDate', '<=', billDateTo);
+  if (reminderStatus === 'in_reminders') base.whereNotNull('b.ReminderId');
+  if (reminderStatus === 'not_in_reminders') base.whereNull('b.ReminderId');
 
   const [counts] = await base
     .clone()
