@@ -90,48 +90,91 @@ function toBill(row, medicines, cloudByMobile, branchId, remindersByCycle) {
   };
 }
 
-/** One row per bill, newest first. */
+/** One row per bill, newest first; without branchId, merges all Prompt branches the user can access. */
 export async function listCustomers(auth, { branchId, search, mobileStatus, medicine, reminderStatus, billDateFrom, billDateTo, page, pageSize }) {
-  const { branch, kind, src } = await resolveSource(auth, branchId);
+  const allBranches = branchId === undefined;
+  const branches = allBranches
+    ? await listSources(auth)
+    : [(await resolveSource(auth, branchId)).branch];
+  const offset = (page - 1) * pageSize;
 
-  const { result, medicines } = await run(kind, async () => {
-    const listed = await promptCustomerRepository.list(src, {
+  // A global page needs enough leading rows from each independent source to merge and slice it.
+  const perSourceLimit = allBranches ? offset + pageSize : pageSize;
+  const perSourceOffset = allBranches ? 0 : offset;
+  const results = await Promise.all(branches.map(async (branch) => {
+    const source = await resolveSource(auth, branch.id);
+    const listed = await run(source.kind, () => promptCustomerRepository.list(source.src, {
       search,
       mobileStatus,
       medicine,
       reminderStatus,
       billDateFrom,
       billDateTo,
-      limit: pageSize,
-      offset: (page - 1) * pageSize,
-    });
-    return { result: listed, medicines: await promptCustomerRepository.billMedicines(src, listed.rows) };
-  });
+      limit: perSourceLimit,
+      offset: perSourceOffset,
+    }));
+    return { ...source, listed };
+  }));
 
-  const mobiles = result.rows
-    .map((row) => normalizeIndianMobile(row.Phone?.trim() ?? ''))
+  const candidates = results.flatMap(({ branch, kind, src, listed }) => listed.rows.map((row) => ({ row, branch, kind, src })));
+  if (allBranches) {
+    candidates.sort((a, b) => {
+      const dateOrder = String(b.row.BillDate ?? '').localeCompare(String(a.row.BillDate ?? ''));
+      if (dateOrder) return dateOrder;
+      if (a.branch.id !== b.branch.id) return a.branch.id - b.branch.id;
+      return a.kind === 'rxbridge'
+        ? Number(b.row.SortKey) - Number(a.row.SortKey)
+        : String(b.row.SortKey ?? '').localeCompare(String(a.row.SortKey ?? ''));
+    });
+  }
+
+  const pageCandidates = allBranches ? candidates.slice(offset, offset + pageSize) : candidates;
+  const medicineEntries = await Promise.all(results.map(async (result) => {
+    const rows = pageCandidates.filter((candidate) => candidate.branch.id === result.branch.id).map((candidate) => candidate.row);
+    const values = await run(result.kind, () => promptCustomerRepository.billMedicines(result.src, rows));
+    return [result.branch.id, values];
+  }));
+  const medicinesByBranch = new Map(medicineEntries);
+
+  const mobiles = pageCandidates
+    .map(({ row }) => normalizeIndianMobile(row.Phone?.trim() ?? ''))
     .filter((n) => n.ok)
     .map((n) => n.value);
   const [cloudByMobile, remindersByCycle] = await Promise.all([
     customerRepository.findByMobiles([...new Set(mobiles)]),
-    reminderRepository.loadReminders(result.rows.filter((row) => row.ReminderId).map((row) => row.ReminderId)),
+    reminderRepository.loadReminders(pageCandidates.filter(({ row }) => row.ReminderId).map(({ row }) => row.ReminderId)),
   ]);
 
+  const counts = { all: 0, valid: 0, missing: 0, invalid: 0 };
+  for (const { listed } of results) {
+    for (const key of Object.keys(counts)) counts[key] += Number(listed.counts[key] ?? 0);
+  }
+  const sourceKinds = new Set(results.map((result) => result.kind));
+
   return {
-    items: result.rows.map((row) => toBill(row, medicines.get(String(row.BillKey)), cloudByMobile, branch.id, remindersByCycle)),
-    counts: result.counts,
-    branch,
+    items: pageCandidates.map(({ row, branch }) => {
+      const bill = toBill(row, medicinesByBranch.get(branch.id)?.get(String(row.BillKey)), cloudByMobile, branch.id, remindersByCycle);
+      return { ...bill, id: `${branch.id}:${bill.billKey}`, branch: { id: branch.id, name: branch.name } };
+    }),
+    counts,
+    branch: allBranches ? null : branches[0],
     // Where the list comes from: bills sent by RxBridge, or the Prompt export database.
-    source: kind,
+    source: sourceKinds.size === 1 ? [...sourceKinds][0] : 'mixed',
     page,
     pageSize,
-    total: result.total,
+    total: results.reduce((sum, result) => sum + result.listed.total, 0),
   };
 }
 
 export async function listMedicines(auth, { branchId }) {
-  const { kind, src } = await resolveSource(auth, branchId);
-  return run(kind, () => promptCustomerRepository.listMedicines(src));
+  const branches = branchId === undefined
+    ? await listSources(auth)
+    : [(await resolveSource(auth, branchId)).branch];
+  const medicineLists = await Promise.all(branches.map(async (branch) => {
+    const { kind, src } = await resolveSource(auth, branch.id);
+    return run(kind, () => promptCustomerRepository.listMedicines(src));
+  }));
+  return [...new Set(medicineLists.flat())].sort((a, b) => a.localeCompare(b));
 }
 
 // Most bills listed per branch for one customer.

@@ -7,10 +7,10 @@ import * as customerService from '../services/customerService.js';
 import * as promptCustomerService from '../services/promptCustomerService.js';
 import { addFromPromptSchema } from '../validators/customerValidators.js';
 
-const branchQuery = { branchId: z.coerce.number().int().positive({ error: 'Choose a branch.' }) };
+const optionalBranchQuery = { branchId: z.coerce.number().int().positive().optional() };
 
 const listQuerySchema = z.object({
-  ...branchQuery,
+  ...optionalBranchQuery,
   search: z.string().trim().max(100).optional(),
   mobileStatus: z.enum(['all', 'valid', 'invalid', 'missing']).default('all'),
   medicine: z.string().trim().min(1).max(100).optional(),
@@ -36,7 +36,7 @@ promptRoutes.get('/customers', validate({ query: listQuerySchema }), async (req,
   res.json(await promptCustomerService.listCustomers(req.auth, req.validatedQuery));
 });
 
-promptRoutes.get('/medicines', validate({ query: z.object(branchQuery) }), async (req, res) => {
+promptRoutes.get('/medicines', validate({ query: z.object(optionalBranchQuery) }), async (req, res) => {
   res.json({ medicines: await promptCustomerService.listMedicines(req.auth, req.validatedQuery) });
 });
 
